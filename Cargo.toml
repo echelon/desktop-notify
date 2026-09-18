@@ -1,0 +1,21 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.0.1"
+authors = ["Brandon Thomas <bt@brand.io>"]
+publish = false
+
+[workspace.dependencies]
+actix-web = "4.13.0"
+anyhow = "1.0.102"
+env_logger = "0.11.9"
+log = "0.4.29"
+rand = "0.9.1"
+rodio = { version = "0.20.1", default-features = false, features = ["symphonia-all"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_derive = "1.0.228"
+serde_yaml = "0.9.34"
+tokio = { version = "1.50.0", features = ["macros"] }
