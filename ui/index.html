@@ -15,7 +15,8 @@
     <main>
       <section id="alert" hidden aria-live="polite">
         <div class="eyebrow"><span class="pulse"></span><span id="kind"></span></div>
-        <h1 id="title"></h1>
+        <div class="task-heading"><h1 id="title"></h1><button id="focus" class="secondary" title="Focus the requesting terminal">Focus</button></div>
+        <p id="focus-status" class="focus-status" role="status" hidden></p>
         <div id="message" class="message"></div>
       </section>
       <section id="empty" class="empty">

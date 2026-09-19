@@ -100,6 +100,62 @@ to `http://127.0.0.1:43110`; the service passes its actual address with
 
 Native Notification Center and the earlier Swift app have been replaced.
 
+## Focus the requesting terminal
+
+The **Focus** button beside an alert brings you back to its originating app on
+macOS. It tries a terminal session, TTY, window ID, window title, then the app,
+using whichever hints are available. A closed session or window falls back to
+the broader target. Focus hides the notification window after success; it does
+not dismiss the alert or stop its sound. Alerts without origin details still
+work and show a disabled Focus button.
+
+Both notification POST endpoints accept an optional `origin` object. Every field
+inside it is optional, including the window and pane fields:
+
+```json
+{
+  "title": "Database migration",
+  "message": "Which database should I target?",
+  "origin": {
+    "terminal_app": "ghostty"
+  }
+}
+```
+
+| Optional field | Meaning |
+| --- | --- |
+| `terminal_app` | `ghostty`, `terminal`, `iterm2`, or a macOS app bundle ID |
+| `app_pid` | Running GUI application's process ID |
+| `pid` | Requesting process ID; the app walks its ancestry to find the GUI app |
+| `terminal_id` | Ghostty AppleScript terminal ID or iTerm2 session UUID |
+| `tty` | Terminal device such as `/dev/ttys001` (Terminal.app or iTerm2) |
+| `window_id` | App's scripting window ID, encoded as a string |
+| `window_title` | Exact window title; duplicate titles fall back to the app |
+| `tmux_socket` | Absolute path to the tmux server socket |
+| `tmux_pane` | Stable pane ID such as `%101` |
+| `tmux_client` | Attached client's TTY; used when switching to a tmux pane |
+
+Ghostty, Terminal.app, and iTerm2 have specific window/session adapters. Other
+apps support application activation and exact window-title matching through
+Accessibility. Focus only activates running apps. It reports failure if the app
+has exited. Without an app identity, session/window hints are searched among
+the three supported terminals; an ambiguous app fallback is not guessed.
+
+The Codex hook automatically captures process and terminal hints. Inside tmux,
+it uses the most recently active client attached to the originating session to
+find the GUI app, and records the pane/socket when available. Selecting a tmux
+pane is best effort and requires its socket; failure still permits app focus.
+Ghostty 1.3 does not expose its AppleScript terminal ID in the shell environment,
+so automatic capture can fall back to Ghostty itself. Callers that know precise
+IDs can pass them in the API or set `NOTIFY_TERMINAL_ID`, `NOTIFY_WINDOW_ID`,
+`NOTIFY_WINDOW_TITLE`, `NOTIFY_TERMINAL_APP`, or `NOTIFY_TTY` before launching Codex.
+Do not use Ghostty's newer core surface ID as an AppleScript terminal ID.
+
+Window/session scripting may prompt for macOS **Automation** permission for
+Desktop Notify. Generic window-title matching additionally needs Accessibility.
+Application-only activation needs neither. Origin values are validated and passed
+as arguments to fixed scripts; they are never executed as shell or AppleScript code.
+
 ## Configuration
 
 Bundled sounds and the default YAML configuration live in
@@ -127,6 +183,7 @@ cargo fmt --all --check
 cargo check --locked --workspace --all-targets
 cargo test --locked --workspace
 python3 -m unittest discover -s scripts -p 'test_*.py'
+node --test scripts/test_ui.mjs
 python3 scripts/smoke_test.py --restart  # Real hooks + audio + concurrent cold start
 python3 scripts/test_codex_live.py      # Optional: one real Codex question/answer turn
 ```

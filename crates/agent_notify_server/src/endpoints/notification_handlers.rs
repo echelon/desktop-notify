@@ -11,6 +11,7 @@ use crate::server_state::ServerState;
 pub struct NotificationRequest {
   title: String,
   message: String,
+  origin: Option<notify_types::Origin>,
 }
 
 pub async fn awaiting_user_input(
@@ -28,6 +29,11 @@ pub async fn all_tasks_finished(
 }
 
 fn notify(state: &ServerState, request: NotificationRequest, done: bool) -> HttpResponse {
+  if let Some(origin) = &request.origin {
+    if let Err(error) = origin.validate() {
+      return HttpResponse::BadRequest().body(error);
+    }
+  }
   let title = request.title.trim();
   let message = request.message.trim();
   if title.is_empty()
@@ -67,6 +73,7 @@ fn notify(state: &ServerState, request: NotificationRequest, done: bool) -> Http
     kind: kind.into(),
     title: title.into(),
     message: message.into(),
+    origin: request.origin,
   };
   // Serialize replacement and dismissal with their corresponding audio command.
   let mut current = state

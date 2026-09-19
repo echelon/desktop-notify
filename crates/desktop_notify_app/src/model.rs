@@ -1,12 +1,6 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct Notification {
-  pub id: String,
-  pub kind: String,
-  pub title: String,
-  pub message: String,
-}
+pub use notify_types::Notification;
 
 #[derive(Clone, Default, Serialize, PartialEq, Eq)]
 pub struct Snapshot {

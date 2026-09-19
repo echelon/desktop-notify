@@ -5,10 +5,13 @@ const { getCurrentWindow } = window.__TAURI__.window;
 const byId = (id) => document.getElementById(id);
 let snapshot = { notification: null, connected: false, error: null };
 let dismissing = null;
+let focusing = null;
+let focusStatus = null;
 
 function render(next) {
   snapshot = next;
   const alert = next.notification;
+  if (focusStatus && focusStatus.id !== alert?.id) focusStatus = null;
   if (dismissing && dismissing !== alert?.id) dismissing = null;
   document.body.dataset.kind = alert?.kind || '';
   byId('alert').hidden = !alert;
@@ -24,6 +27,33 @@ function render(next) {
     byId('message').textContent = alert.message;
   }
   byId('dismiss').disabled = !!dismissing || !next.connected;
+  const origin = alert?.origin;
+  const canFocus = origin && ['terminal_app', 'app_pid', 'pid', 'terminal_id', 'tty', 'window_id', 'window_title'].some((key) => origin[key]);
+  byId('focus').disabled = !!focusing || !canFocus;
+  byId('focus').textContent = focusing === alert?.id ? 'Focusing…' : 'Focus';
+  byId('focus').title = canFocus ? 'Focus the requesting terminal without dismissing this alert' : 'No terminal information was supplied';
+  byId('focus-status').hidden = !focusStatus;
+  byId('focus-status').textContent = focusStatus?.message || '';
+}
+
+async function focusTerminal() {
+  const id = snapshot.notification?.id;
+  if (!id || focusing) return;
+  focusing = id;
+  focusStatus = null;
+  render(snapshot);
+  try {
+    const result = await invoke('focus_notification', { id });
+    if (snapshot.notification?.id === id) {
+      focusStatus = { id, message: result.warning || `Focused the ${result.target}.` };
+      await invoke('hide_window');
+    }
+  } catch (error) {
+    if (snapshot.notification?.id === id) focusStatus = { id, message: String(error) };
+  } finally {
+    focusing = null;
+    render(snapshot);
+  }
 }
 
 async function dismiss() {
@@ -36,6 +66,7 @@ async function dismiss() {
 }
 
 byId('dismiss').addEventListener('click', dismiss);
+byId('focus').addEventListener('click', focusTerminal);
 byId('hide').addEventListener('click', () => invoke('hide_window'));
 byId('resize').addEventListener('mousedown', (e) => { if (e.button === 0) getCurrentWindow().startResizeDragging('SouthEast'); });
 document.addEventListener('keydown', (e) => {

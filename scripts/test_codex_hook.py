@@ -8,6 +8,24 @@ import codex_hook as hook
 
 
 class HookTests(unittest.TestCase):
+    def setUp(self):
+        self.origin = patch.object(hook, "capture_origin", return_value=None).start()
+        self.addCleanup(patch.stopall)
+
+    def test_origin_is_attached_to_the_http_request(self):
+        self.origin.return_value = {"terminal_app": "ghostty"}
+        with patch("sys.stdin", io.StringIO('{"hook_event_name":"Stop"}')), contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(hook, "ensure_server"), patch.object(hook, "http", return_value={"id": "test"}) as post:
+            hook.main()
+        self.assertEqual(post.call_args.args[1]["origin"], {"terminal_app": "ghostty"})
+
+    def test_origin_failure_does_not_suppress_notification(self):
+        self.origin.side_effect = OSError("ps unavailable")
+        with patch("sys.stdin", io.StringIO('{"hook_event_name":"Stop"}')), contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(hook, "ensure_server"), patch.object(hook, "http", return_value={"id": "test"}) as post:
+            hook.main()
+        self.assertNotIn("origin", post.call_args.args[1])
+
     def test_completion_has_outcome(self):
         endpoint, payload = hook.notification_for({"hook_event_name": "Stop", "cwd": "/tmp/my-project",
                                                   "last_assistant_message": "**Fixed login.**\nAll 12 tests pass."})

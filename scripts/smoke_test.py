@@ -63,6 +63,9 @@ def run(restart=False):
         eventually(lambda: hook.http("/state")["audio"]["loop_name"] == "done")
         old = hook.http("/notification")
         assert old["kind"] == "all_tasks_finished"
+        if hook.sys.platform == "darwin":
+            assert old.get("origin", {}).get("pid"), "Installed hook did not attach focus metadata"
+            print("PASS hook origin round trip:", json.dumps(old["origin"]), flush=True)
         print(f"PASS Stop -> done loop; server pid={pid}", flush=True)
 
         for event in [

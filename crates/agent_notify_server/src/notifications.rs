@@ -3,13 +3,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Notification {
-  pub id: String,
-  pub kind: String,
-  pub title: String,
-  pub message: String,
-}
+pub use notify_types::Notification;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DesktopStatus {

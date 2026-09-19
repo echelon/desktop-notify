@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod focus;
 mod model;
 
 use std::sync::{
@@ -49,6 +50,28 @@ fn get_snapshot(state: State<'_, AppState>) -> Snapshot {
     .lock()
     .unwrap_or_else(|e| e.into_inner())
     .clone()
+}
+
+#[tauri::command]
+async fn focus_notification(
+  id: String,
+  state: State<'_, AppState>,
+) -> Result<focus::FocusResult, String> {
+  let origin = {
+    let snapshot = state.snapshot.lock().unwrap_or_else(|e| e.into_inner());
+    let notification = snapshot
+      .notification
+      .as_ref()
+      .filter(|n| n.id == id)
+      .ok_or("This notification has been replaced or dismissed.")?;
+    notification
+      .origin
+      .clone()
+      .ok_or("This notification has no terminal information.")?
+  };
+  tauri::async_runtime::spawn_blocking(move || focus::focus(&origin))
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -235,6 +258,7 @@ fn main() {
       get_snapshot,
       window_ready,
       hide_window,
+      focus_notification,
       dismiss_notification
     ])
     .setup(|app| {

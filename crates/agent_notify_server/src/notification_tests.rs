@@ -27,6 +27,7 @@ fn routes(cfg: &mut web::ServiceConfig) {
     .route("/awaiting_user_input", web::post().to(awaiting_user_input))
     .route("/all_tasks_finished", web::post().to(all_tasks_finished))
     .route("/dismiss/{id}", web::post().to(dismiss))
+    .route("/notification", web::get().to(current_notification))
     .route("/stop", web::post().to(stop_handler));
 }
 
@@ -49,6 +50,7 @@ async fn notification_replacement_and_stale_dismissal_are_atomic() {
     assert_eq!(response.title, "Work ✓");
     assert_eq!(response.message, "A question or outcome.");
     assert_eq!(response.kind, endpoint);
+    assert!(response.origin.is_none());
     ids.push(response.id);
     match commands.try_recv().unwrap() {
       AudioCommand::PlayLoop(spec) => {
@@ -176,4 +178,81 @@ async fn missing_sound_does_not_create_a_silent_alert() {
     StatusCode::SERVICE_UNAVAILABLE
   );
   assert!(commands.try_recv().is_err());
+}
+
+#[actix_web::test]
+async fn optional_origins_round_trip_through_both_endpoints_and_polling() {
+  let (state, commands) = state();
+  let app = test::init_service(App::new().app_data(state).configure(routes)).await;
+  for endpoint in ["/awaiting_user_input", "/all_tasks_finished"] {
+    for origin in [
+      "null",
+      "{}",
+      r#"{"terminal_app":"ghostty"}"#,
+      r#"{"pid":123}"#,
+      r#"{"window_id":"42"}"#,
+      r#"{"terminal_app":"ghostty","app_pid":123,"pid":456,"terminal_id":"abc","window_id":"def","window_title":"literal \"title\"; $(echo nope)","tty":"/dev/ttys001","tmux_socket":"/tmp/tmux-test","tmux_pane":"%3","tmux_client":"/dev/ttys001"}"#,
+    ] {
+      let request = test::TestRequest::post()
+        .uri(endpoint)
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload(format!(
+          r#"{{"title":"Task","message":"Which option?","origin":{origin}}}"#
+        ))
+        .to_request();
+      let created: crate::notifications::Notification =
+        test::call_and_read_body_json(&app, request).await;
+      let polled: crate::notifications::Notification = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::get().uri("/notification").to_request(),
+      )
+      .await;
+      assert_eq!(polled, created);
+      if origin != "null" {
+        assert!(created.origin.is_some());
+      }
+      assert!(matches!(
+        commands.try_recv().unwrap(),
+        AudioCommand::PlayLoop(_)
+      ));
+    }
+  }
+}
+
+#[actix_web::test]
+async fn invalid_origin_cannot_replace_an_active_notification() {
+  let (state, commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  let valid = test::TestRequest::post()
+    .uri("/awaiting_user_input")
+    .insert_header(("Content-Type", "application/json"))
+    .set_payload(r#"{"title":"Keep","message":"Original","origin":{"terminal_app":"ghostty"}}"#)
+    .to_request();
+  let original: crate::notifications::Notification =
+    test::call_and_read_body_json(&app, valid).await;
+  commands.try_recv().unwrap();
+  for origin in [
+    r#"{"pid":0}"#,
+    r#"{"window_title":"\n"}"#,
+    r#"{"tmux_pane":"%1; kill-server"}"#,
+    r#"{"unexpected":"field"}"#,
+    r#"{"window_id":false}"#,
+  ] {
+    let invalid = test::TestRequest::post()
+      .uri("/all_tasks_finished")
+      .insert_header(("Content-Type", "application/json"))
+      .set_payload(format!(
+        r#"{{"title":"Invalid","message":"Rejected","origin":{origin}}}"#
+      ))
+      .to_request();
+    assert_eq!(
+      test::call_service(&app, invalid).await.status(),
+      StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+      state.notifications.lock().unwrap().active.as_ref().unwrap(),
+      &original
+    );
+    assert!(commands.try_recv().is_err());
+  }
 }

@@ -14,6 +14,8 @@ import time
 import urllib.error
 import urllib.request
 
+from notification_origin import capture_origin
+
 ROOT = Path(__file__).resolve().parents[1]
 BASE_URL = "http://127.0.0.1:43110"
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -139,6 +141,13 @@ def main():
         if alert:
             ensure_server()
             endpoint, payload = alert
+            try:
+                origin = capture_origin()
+                if origin:
+                    payload["origin"] = origin
+            except Exception:
+                # A missing terminal hint must never suppress the notification.
+                pass
             result = http(endpoint, payload, timeout=5)
             if not result.get("id"):
                 raise RuntimeError("Server did not acknowledge the alert")

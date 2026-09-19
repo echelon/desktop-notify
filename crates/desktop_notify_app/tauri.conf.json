@@ -22,6 +22,6 @@
     "active": true, "targets": ["app"], "category": "Productivity",
     "shortDescription": "Persistent agent alerts in your tray",
     "icon": ["icons/icon.png", "icons/icon.icns"],
-    "macOS": { "minimumSystemVersion": "11.0" }
+    "macOS": { "minimumSystemVersion": "11.0", "infoPlist": "Info.plist" }
   }
 }

@@ -24,6 +24,10 @@
 
   <div class="group">
     <h2>Agent notifications</h2>
+    <p>An optional <code>origin</code> object enables the desktop app's Focus button.
+      For example, <code>"origin": {"terminal_app": "ghostty"}</code> focuses Ghostty.
+      All origin fields are optional; see the workspace README for process, window,
+      terminal session, and tmux hints.</p>
     <p>Send JSON with a <code>title</code> and <code>message</code>. The latest alert
       replaces the previous one. Use <strong>Dismiss &amp; Stop</strong> on the
       desktop alert to clear it and stop its sound.</p>

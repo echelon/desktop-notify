@@ -31,6 +31,7 @@ def build():
         "CFBundlePackageType": "APPL", "CFBundleVersion": "1", "CFBundleShortVersionString": "0.0.1",
         "CFBundleIconFile": "icon.icns", "LSMinimumSystemVersion": "11.0", "LSUIElement": True,
         "NSHighResolutionCapable": True,
+        "NSAppleEventsUsageDescription": "Focus the terminal window that requested your attention.",
     }
     (APP / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
     subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(APP)], check=True)
