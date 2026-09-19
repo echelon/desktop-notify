@@ -1,10 +1,34 @@
 """Collect best-effort focus hints without opening apps or prompting for access."""
 import os
+import json
 from pathlib import Path
 import plistlib
 import shutil
 import subprocess
 import sys
+
+REGISTRATIONS = Path(__file__).resolve().parents[1] / "target/terminal-origins.json"
+
+
+def registration_key(origin):
+    """Bind a window to its outer TTY and app lifetime, not to every Ghostty window."""
+    if origin.get("app_pid") and origin.get("tty"):
+        return f'{origin["app_pid"]}:{origin["tty"]}'
+    return None
+
+
+def registered_origin(origin):
+    key = registration_key(origin)
+    if not key:
+        return {}
+    try:
+        entry = json.loads(REGISTRATIONS.read_text()).get(key, {})
+        if entry.get("terminal_app") != origin.get("terminal_app"):
+            return {}
+        return {field: entry[field] for field in ("window_id", "terminal_id")
+                if isinstance(entry.get(field), str) and entry[field]}
+    except (OSError, ValueError, AttributeError):
+        return {}
 
 TERMINALS = {
     "ghostty": "com.mitchellh.ghostty",
@@ -77,7 +101,7 @@ def tmux_context(env):
     return origin, None
 
 
-def capture_origin(env=None):
+def capture_origin(env=None, include_registered=True):
     if sys.platform != "darwin":
         return None
     env = os.environ if env is None else env
@@ -100,6 +124,8 @@ def capture_origin(env=None):
         # the stable ID following the colon. It may be stale inside tmux.
         if env.get("ITERM_SESSION_ID"):
             origin["terminal_id"] = env["ITERM_SESSION_ID"].split(":", 1)[-1]
+    if include_registered:
+        origin.update(registered_origin(origin))
     # Explicit per-session overrides for callers with a known scripting ID.
     # Ghostty 1.3's AppleScript UUID is not its newer core surface ID.
     for field in ("terminal_app", "terminal_id", "window_id", "window_title", "tty"):

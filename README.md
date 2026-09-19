@@ -151,6 +151,23 @@ IDs can pass them in the API or set `NOTIFY_TERMINAL_ID`, `NOTIFY_WINDOW_ID`,
 `NOTIFY_WINDOW_TITLE`, `NOTIFY_TERMINAL_APP`, or `NOTIFY_TTY` before launching Codex.
 Do not use Ghostty's newer core surface ID as an AppleScript terminal ID.
 
+To associate a specific Ghostty window with its shell (including when it is on
+another Space), run this from a foreground shell in that window:
+
+```sh
+python3 /path/to/desktop-notify/scripts/register_terminal.py --test
+```
+
+This records the window ID for the outer terminal's TTY and Ghostty process.
+With tmux, another pane in the same attached terminal is fine. Future hook
+notifications use this registration automatically; no hook reinstall is needed.
+Registrations live in ignored `target/terminal-origins.json`. Re-register after
+restarting Ghostty or opening a new terminal. Add `--terminal` to also register
+the selected Ghostty terminal/pane; the default only registers the window.
+The optional `--test` waits ten seconds so you can switch Spaces, then sends an
+alert with the exact window ID and no tmux targeting. It clears that test after
+60 seconds without dismissing any replacement notification.
+
 Window/session scripting may prompt for macOS **Automation** permission for
 Desktop Notify. Generic window-title matching additionally needs Accessibility.
 Application-only activation needs neither. Origin values are validated and passed
