@@ -20,7 +20,25 @@
 </head>
 <body>
   <h1>Agent Notify Server</h1>
-  <p class="sub">Local audio-cue HTTP server for long-running agents.</p>
+  <p class="sub">Desktop alerts and looping sounds for long-running agents.</p>
+
+  <div class="group">
+    <h2>Agent notifications</h2>
+    <p>Send JSON with a <code>title</code> and <code>message</code>. The latest alert
+      replaces the previous one. Use <strong>Dismiss &amp; Stop</strong> on the
+      desktop alert to clear it and stop its sound.</p>
+    <table>
+      <tr><th>Endpoint</th><th>Behavior</th></tr>
+      <tr><td><code>POST /awaiting_user_input</code></td><td>Show the question and loop the awaiting sound.</td></tr>
+      <tr><td><code>POST /all_tasks_finished</code></td><td>Show the outcome and loop the done sound.</td></tr>
+      <tr><td><code>POST /dismiss/{id}</code></td><td>Dismiss this alert only; stale buttons cannot stop newer work.</td></tr>
+      <tr><td><code>POST /stop</code></td><td>Clear the current alert and stop all sounds.</td></tr>
+      <tr><td><code>GET /health</code></td><td>Server identity, API version, and PID.</td></tr>
+    </table>
+    <p>Title: 1–200 characters. Message: 1–4,000 characters. Responses include the alert ID.</p>
+    <button id="stop" type="button">Dismiss &amp; Stop</button>
+    <span id="stop-result" role="status"></span>
+  </div>
 
   <div class="group">
     <h2>One-shot alerts</h2>
@@ -92,4 +110,13 @@
     </ul>
   </div>
 </body>
+<script>
+document.getElementById('stop').addEventListener('click', async () => {
+  const status = document.getElementById('stop-result');
+  try {
+    const response = await fetch('/stop', {method: 'POST'});
+    status.textContent = response.ok ? 'Stopped.' : 'Could not stop the alert.';
+  } catch (_) { status.textContent = 'Server unavailable.'; }
+});
+</script>
 </html>

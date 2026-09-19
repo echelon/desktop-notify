@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Local notification window events and dragging",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:window:allow-start-dragging", "core:window:allow-start-resize-dragging"]
+}

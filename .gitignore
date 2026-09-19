@@ -4,3 +4,5 @@
 
 .idea/
 prompts/
+__pycache__/
+/crates/desktop_notify_app/gen/

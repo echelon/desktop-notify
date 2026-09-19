@@ -44,6 +44,17 @@ pub struct AudioPlayerHandle {
 }
 
 impl AudioPlayerHandle {
+  #[cfg(test)]
+  pub(crate) fn recording() -> (Self, Receiver<AudioCommand>) {
+    let (tx, rx) = mpsc::channel();
+    (
+      Self {
+        tx,
+        status: Arc::new(Mutex::new(InternalStatus::default())),
+      },
+      rx,
+    )
+  }
   pub fn play_once(&self, path: PathBuf) {
     let _ = self.tx.send(AudioCommand::PlayOnce(path));
   }
@@ -147,7 +158,8 @@ pub fn spawn_audio_player() -> (AudioPlayerHandle, JoinHandle<()>) {
   (AudioPlayerHandle { tx, status }, thread)
 }
 
-enum AudioCommand {
+#[derive(Debug)]
+pub(crate) enum AudioCommand {
   PlayOnce(PathBuf),
   PlayLoop(LoopSpec),
   StopAll,

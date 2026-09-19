@@ -1,7 +1,7 @@
 # desktop-notify
 
-A local HTTP server for desktop notifications. It currently plays one-shot and
-looping sounds; visible desktop notifications are planned for the future.
+A local REST API for getting an agent user's attention, with looping sounds,
+a Rust/Tauri tray app, and global Codex CLI hooks.
 
 This Rust workspace starts with
 [`agent-notify-server`](crates/agent_notify_server/README.md), copied from ArtCraft.
@@ -11,20 +11,94 @@ root `Cargo.toml`.
 ## Run
 
 ```sh
-cargo run --locked -p agent-notify-server
+python3 scripts/build.py
+target/debug/agent-notify-server
 ```
 
 The server listens on `http://127.0.0.1:43110`. Open that address for the API
 reference, or send requests directly:
 
 ```sh
-curl http://127.0.0.1:43110/alert_beep  # Play a sound once
-curl http://127.0.0.1:43110/loop_done   # Repeat the completion sound
-curl http://127.0.0.1:43110/stop        # Stop all playback
-curl http://127.0.0.1:43110/state       # Inspect playback and configuration
+curl -X POST http://127.0.0.1:43110/awaiting_user_input \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Database migration","message":"Which database should I target?"}'
+
+curl -X POST http://127.0.0.1:43110/all_tasks_finished \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Login fix completed","message":"Fixed the expired-session redirect. All 12 tests pass."}'
+
+curl -X POST http://127.0.0.1:43110/stop
+curl http://127.0.0.1:43110/state
 ```
 
 Press Ctrl+C to stop the server.
+
+Both POST endpoints require nonblank `title` (up to 200 characters) and `message`
+(up to 4,000 characters). They return `{id, kind, title, message}` and replace the
+previous alert. Awaiting input uses `alert_await_user_input_sound`; completion uses
+`alert_done_sound`. Sound continues until dismissed, stopped, or replaced.
+`POST /dismiss/{id}` dismisses only that alert; an old notification cannot silence
+a newer one. `GET /stop` and all legacy sound endpoints remain available.
+
+## Global Codex CLI hooks
+
+```sh
+python3 scripts/install_hooks.py            # Preview the exact hooks
+python3 scripts/install_hooks.py --install  # Install, back up, trust, verify
+python3 scripts/install_hooks.py --verify   # Ask Codex to verify enabled + trusted
+```
+
+The installer updates **`~/.codex/hooks.json`** and stores the exact definitions'
+trust hashes in **`~/.codex/config.toml`** using Codex's configuration API. It replaces
+the previous `afplay` notification hooks, preserves unrelated configuration, and
+creates timestamped `*.desktop-notify-backup-*` files alongside both files. It does
+not replace the existing top-level `notify` integration. Start a new Codex session
+after installing so it loads the new hooks. The implementation is
+[`scripts/codex_hook.py`](scripts/codex_hook.py); keep this checkout in place.
+
+| Codex event | API |
+| --- | --- |
+| `Stop` | `POST /all_tasks_finished`, with the final response as the outcome |
+| `PermissionRequest` | `POST /awaiting_user_input`, with the approval description |
+| `PreToolUse` matching `request_user_input` / `request_user_input_async` | `POST /awaiting_user_input`, with the actual questions |
+
+Plain-text final questions are treated as awaiting input using a small heuristic;
+structured question tools are more reliable. Titles include the working directory
+name and the first line of the question/outcome. Long text is truncated to API
+limits. A `Stop` event represents completion of a Codex turn, not all concurrent
+sessions. This server intentionally has one active alert, with the latest winning.
+
+Every matching hook first checks `/health`. When the server is absent, a file lock
+serializes concurrent launches, `cargo build --locked --workspace` rebuilds the Rust
+server and Tauri app, and the server starts detached. Existing healthy servers are
+reused; a closed tray app is reopened. Build/start output goes to
+`target/desktop-notify.log`. Hook
+failures appear as Codex warnings and never grant or deny a tool permission.
+
+## Tauri tray app
+
+The build creates and ad-hoc signs **`target/desktop/Desktop Notify.app`**. Its Rust
+shell, dark frameless UI, and tray behavior follow the sibling Todo app. The
+frontend is plain HTML/CSS/JavaScript bundled by Tauri; no Node build step is needed.
+
+- New alerts open the window above other apps, on every Space, including full-screen apps.
+- **Dismiss & Stop** (or Enter) calls `POST /dismiss/{id}`, stops the matching sound,
+  and hides the window once the service confirms the alert has cleared.
+- **Hide to tray**, Escape, closing, or minimizing hides the window without
+  dismissing the alert. Its sound keeps playing until explicitly dismissed.
+- Clicking the bell tray icon recalls the current alert. Right-click opens the
+  Show Notifications / Hide to Tray / Quit menu. A dot marks an active alert.
+- When idle, the app stays in the tray. Recalling it shows **All caught up**.
+- The app stays alive across service restarts and reconnects automatically. A
+  hidden alert stays hidden until recalled or replaced with a new alert.
+
+The Tauri Rust client talks directly to the local service. It polls every 400 ms
+and reports `/desktop/status` heartbeats. `/state` includes `desktop_connected`
+and `desktop` presentation/window visibility/process details. The tray app defaults
+to `http://127.0.0.1:43110`; the service passes its actual address with
+`--server-url` when launching the app. Keep one service/app pair running.
+
+Native Notification Center and the earlier Swift app have been replaced.
 
 ## Configuration
 
@@ -40,6 +114,8 @@ Environment variables:
 - `HTTP_BIND_ADDRESS`: listener address (default `127.0.0.1:43110`).
 - `NOTIFY_CONFIG_PATH`: path to a custom YAML configuration.
 - `RUST_LOG`: logging filter (default `info,actix_web=info`).
+- `NOTIFY_APP_PATH`: alternate path to the built macOS app bundle.
+- `NOTIFY_DISABLE_DESKTOP`: set to skip launching the Tauri app (e.g. headless tests).
 
 See the [server README](crates/agent_notify_server/README.md) for the full API,
 loop escalation settings, and agent integration examples.
@@ -50,10 +126,22 @@ loop escalation settings, and agent integration examples.
 cargo fmt --all --check
 cargo check --locked --workspace --all-targets
 cargo test --locked --workspace
+python3 -m unittest discover -s scripts -p 'test_*.py'
+python3 scripts/smoke_test.py --restart  # Real hooks + audio + concurrent cold start
+python3 scripts/test_codex_live.py      # Optional: one real Codex question/answer turn
 ```
 
-The lockfile retains the server's dependency versions from ArtCraft.
+The lockfile pins both the audio server and Tauri dependencies.
 
 Playback requires an audio output device. Linux builds also need ALSA development
 headers and `pkg-config` (for example, `libasound2-dev` and `pkg-config` on Debian or
 Ubuntu).
+
+The desktop app additionally needs Tauri's platform prerequisites. macOS uses
+Xcode Command Line Tools; Linux needs WebKitGTK 4.1 and AppIndicator development
+libraries. The server can still be built alone with `cargo build -p agent-notify-server`.
+
+The smoke test plays both sounds briefly and stops them in a `finally` block. The
+live test uses your configured model/account and verifies actual Codex hook
+dispatch. Both require the global hooks to have been installed. The API is intended
+for trusted local callers; keep the default loopback bind address.

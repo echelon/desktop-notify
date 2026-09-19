@@ -1,7 +1,8 @@
 # agent-notify-server
 
-Tiny local HTTP server that plays notification sounds for long-running agents
-(Claude Code, in particular). Replaces ad-hoc `afplay` bash loops that were
+Local REST server with looping sounds and actionable desktop alerts for agents.
+See the [workspace README](../../README.md) for the new notification API, Tauri
+tray app, and the installed **Codex CLI hooks**. Replaces `afplay` bash loops that were
 prone to leaving zombie processes — the server owns the audio pipeline and
 exits cleanly with Ctrl+C.
 
@@ -22,6 +23,11 @@ The server listens on `127.0.0.1:43110` by default. Override with
 | Method | Path           | Behavior                                                                                     |
 |--------|----------------|----------------------------------------------------------------------------------------------|
 | GET    | `/`            | Static HTML page listing the API.                                                            |
+| POST   | `/awaiting_user_input` | JSON `{title, message}`; awaiting loop plus dismissible desktop alert. |
+| POST   | `/all_tasks_finished` | JSON `{title, message}`; done loop plus dismissible desktop alert. |
+| POST   | `/dismiss/{id}` | Dismiss this alert and stop audio only if it is still current. |
+| POST   | `/stop` | Stop all audio and clear the current notification. |
+| GET    | `/health` | Service identity, API version, and process ID for hook startup. |
 | GET    | `/alert_beep`  | Play `alert_beep_sound` once (mixes over any active loop).                                   |
 | GET    | `/alert_done`  | Play `alert_done_sound` once.                                                                |
 | GET    | `/alert_await` | Play `alert_await_user_input_sound` once.                                                    |
@@ -123,7 +129,10 @@ escalate_wait_3: 45
 - All voices in a session share the *current* stage's gap, so existing
   voices also speed up when the supervisor advances stages.
 
-## Claude Code wiring
+## Legacy Claude Code wiring
+
+This section documents the older audio-only integration. For Codex and desktop
+alerts, use the [global hook installer](../../README.md#global-codex-cli-hooks).
 
 The intended workflow:
 

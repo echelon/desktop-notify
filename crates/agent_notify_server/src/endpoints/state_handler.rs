@@ -7,15 +7,25 @@ use crate::audio_player::EngineStatus;
 use crate::server_state::ServerState;
 
 pub async fn state_handler(state: web::Data<ServerState>) -> impl Responder {
+  let current = state
+    .notifications
+    .lock()
+    .unwrap_or_else(|e| e.into_inner());
   let resp = StateResponse {
     audio: state.audio.status(),
     config: ConfigSummary::from_state(&state),
+    notification: current.active.clone(),
+    desktop: current.desktop.clone(),
+    desktop_connected: current.desktop_connected(),
   };
   HttpResponse::Ok().json(resp)
 }
 
 #[derive(Serialize)]
 struct StateResponse {
+  notification: Option<crate::notifications::Notification>,
+  desktop: crate::notifications::DesktopStatus,
+  desktop_connected: bool,
   audio: EngineStatus,
   config: ConfigSummary,
 }

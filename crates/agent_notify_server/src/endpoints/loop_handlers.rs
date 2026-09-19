@@ -57,6 +57,11 @@ fn play_loop_or_404(
     jitter_millis_schedule: state.config.loop_jitter_schedule_millis(),
     escalate_waits_secs: state.config.escalate_waits_secs(),
   };
+  let mut current = state
+    .notifications
+    .lock()
+    .unwrap_or_else(|e| e.into_inner());
+  current.active = None;
   state.audio.play_loop(spec);
   HttpResponse::Ok().body("ok\n")
 }
