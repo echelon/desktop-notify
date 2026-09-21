@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import uuid
 
 import notification_origin as origins
 
@@ -63,6 +64,7 @@ def test_alert(origin, delay):
     print(f"Switch to another Space now. A test alert will appear in {delay} seconds.", flush=True)
     time.sleep(delay)
     notification = hook.http("/awaiting_user_input", {
+        "session_id": "focus-test-" + uuid.uuid4().hex,
         "title": "Focus test: this Ghostty window",
         "message": "Click Focus. It should return to the window where you ran register_terminal.py, including its Space. The test clears itself after 60 seconds.",
         "origin": origin,
@@ -73,7 +75,7 @@ def test_alert(origin, delay):
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             state = hook.http("/state")
-            if (state.get("notification") or {}).get("id") != notification["id"]:
+            if not any(n["id"] == notification["id"] for n in state.get("notifications", [])):
                 break
             sample = state.get("desktop", {})
             if not report["samples"] or report["samples"][-1] != sample:

@@ -34,3 +34,6 @@ anyhow = { workspace = true }
 
 # Random
 rand = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1"

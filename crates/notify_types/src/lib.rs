@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Notification {
   pub id: String,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub session_id: Option<String>,
+  #[serde(default)]
+  pub silenced: bool,
   pub kind: String,
   pub title: String,
   pub message: String,

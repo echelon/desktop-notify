@@ -14,7 +14,9 @@ pub async fn state_handler(state: web::Data<ServerState>) -> impl Responder {
   let resp = StateResponse {
     audio: state.audio.status(),
     config: ConfigSummary::from_state(&state),
-    notification: current.active.clone(),
+    notification: current.active.first().cloned(),
+    notifications: current.active.clone(),
+    audio_notification_id: current.audio_id.clone(),
     desktop: current.desktop.clone(),
     desktop_connected: current.desktop_connected(),
   };
@@ -24,6 +26,8 @@ pub async fn state_handler(state: web::Data<ServerState>) -> impl Responder {
 #[derive(Serialize)]
 struct StateResponse {
   notification: Option<crate::notifications::Notification>,
+  notifications: Vec<crate::notifications::Notification>,
+  audio_notification_id: Option<String>,
   desktop: crate::notifications::DesktopStatus,
   desktop_connected: bool,
   audio: EngineStatus,

@@ -75,6 +75,7 @@ async fn main() -> anyhow::Result<()> {
       .wrap(
         Logger::default()
           .exclude("/notification")
+          .exclude("/notifications")
           .exclude("/desktop/status"),
       )
       .route("/", web::get().to(root_handler))
@@ -90,7 +91,9 @@ async fn main() -> anyhow::Result<()> {
       .route("/awaiting_user_input", web::post().to(awaiting_user_input))
       .route("/all_tasks_finished", web::post().to(all_tasks_finished))
       .route("/notification", web::get().to(current_notification))
+      .route("/notifications", web::get().to(list_notifications))
       .route("/dismiss/{id}", web::post().to(dismiss))
+      .route("/silence/{id}", web::post().to(silence))
       .route("/desktop/status", web::post().to(desktop_status))
       .route("/stop", web::post().to(stop_handler))
   })

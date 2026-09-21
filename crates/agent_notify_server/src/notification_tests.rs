@@ -28,6 +28,8 @@ fn routes(cfg: &mut web::ServiceConfig) {
     .route("/all_tasks_finished", web::post().to(all_tasks_finished))
     .route("/dismiss/{id}", web::post().to(dismiss))
     .route("/notification", web::get().to(current_notification))
+    .route("/notifications", web::get().to(list_notifications))
+    .route("/silence/{id}", web::post().to(silence))
     .route("/stop", web::post().to(stop_handler));
 }
 
@@ -75,7 +77,7 @@ async fn notification_replacement_and_stale_dismissal_are_atomic() {
       .lock()
       .unwrap()
       .active
-      .as_ref()
+      .first()
       .unwrap()
       .id,
     ids[1]
@@ -91,7 +93,7 @@ async fn notification_replacement_and_stale_dismissal_are_atomic() {
     commands.try_recv().unwrap(),
     AudioCommand::StopAll
   ));
-  assert!(state.notifications.lock().unwrap().active.is_none());
+  assert!(state.notifications.lock().unwrap().active.is_empty());
   let repeat = test::TestRequest::post()
     .uri(&format!("/dismiss/{}", ids[1]))
     .to_request();
@@ -153,7 +155,7 @@ async fn stop_clears_notification_and_all_audio() {
     test::call_service(&app, stop).await.status(),
     StatusCode::OK
   );
-  assert!(state.notifications.lock().unwrap().active.is_none());
+  assert!(state.notifications.lock().unwrap().active.is_empty());
   assert!(matches!(
     commands.try_recv().unwrap(),
     AudioCommand::StopAll
@@ -250,9 +252,161 @@ async fn invalid_origin_cannot_replace_an_active_notification() {
       StatusCode::BAD_REQUEST
     );
     assert_eq!(
-      state.notifications.lock().unwrap().active.as_ref().unwrap(),
+      state.notifications.lock().unwrap().active.first().unwrap(),
       &original
     );
     assert!(commands.try_recv().is_err());
   }
+}
+
+#[actix_web::test]
+async fn sessions_update_silence_and_clear_independently() {
+  let (state, commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  let mut created = Vec::new();
+  for (session, kind) in [
+    ("agent-a", "awaiting_user_input"),
+    ("agent-b", "all_tasks_finished"),
+  ] {
+    let n: crate::notifications::Notification = test::call_and_read_body_json(
+      &app,
+      test::TestRequest::post().uri(&format!("/{kind}"))
+        .set_json(serde_json::json!({"session_id": session, "title": "Same project", "message": "Update", "origin": {"window_id": session}}))
+        .to_request(),
+    ).await;
+    created.push(n);
+  }
+  let a = &created[0];
+  let b = &created[1];
+  let list: Vec<crate::notifications::Notification> = test::call_and_read_body_json(
+    &app,
+    test::TestRequest::get().uri("/notifications").to_request(),
+  )
+  .await;
+  assert_eq!(list, vec![b.clone(), a.clone()]);
+  // The newer completion must not interrupt a pending question.
+  assert!(matches!(commands.try_recv().unwrap(), AudioCommand::PlayLoop(s) if s.name == "await"));
+  assert!(commands.try_recv().is_err());
+
+  // Clearing the non-audible entry cannot silence the pending question.
+  let cleared: serde_json::Value = test::call_and_read_body_json(
+    &app,
+    test::TestRequest::post()
+      .uri(&format!("/dismiss/{}", b.id))
+      .to_request(),
+  )
+  .await;
+  assert_eq!(cleared["stopped"], true);
+  assert!(commands.try_recv().is_err());
+  assert_eq!(state.notifications.lock().unwrap().active, vec![a.clone()]);
+
+  // Silence keeps the row and its focus origin intact.
+  let muted: serde_json::Value = test::call_and_read_body_json(
+    &app,
+    test::TestRequest::post()
+      .uri(&format!("/silence/{}", a.id))
+      .to_request(),
+  )
+  .await;
+  assert_eq!(muted["stopped"], true);
+  assert!(matches!(
+    commands.try_recv().unwrap(),
+    AudioCommand::StopAll
+  ));
+  let row = state.notifications.lock().unwrap().active[0].clone();
+  assert!(row.silenced);
+  assert_eq!(row.origin, a.origin);
+
+  // Another session and the legacy slot coexist with this silenced row.
+  for session in [serde_json::json!("agent-b"), serde_json::Value::Null] {
+    let _: crate::notifications::Notification = test::call_and_read_body_json(
+      &app,
+      test::TestRequest::post()
+        .uri("/all_tasks_finished")
+        .set_json(
+          serde_json::json!({"session_id": session, "title": "Done", "message": "Completed"}),
+        )
+        .to_request(),
+    )
+    .await;
+    assert!(matches!(commands.try_recv().unwrap(), AudioCommand::PlayLoop(s) if s.name == "done"));
+  }
+  assert_eq!(state.notifications.lock().unwrap().active.len(), 3);
+  let others = state.notifications.lock().unwrap().active[..2].to_vec();
+
+  // Updating A re-arms only A, retaining its origin when hints are omitted.
+  let replacement: crate::notifications::Notification = test::call_and_read_body_json(
+    &app, test::TestRequest::post().uri("/awaiting_user_input")
+      .set_json(serde_json::json!({"session_id": "agent-a", "title": "New question", "message": "Which option?"})).to_request(),
+  ).await;
+  assert_eq!(replacement.origin, a.origin);
+  assert!(!replacement.silenced);
+  assert_ne!(replacement.id, a.id);
+  assert_eq!(state.notifications.lock().unwrap().active[1..], others);
+  assert!(matches!(commands.try_recv().unwrap(), AudioCommand::PlayLoop(s) if s.name == "await"));
+  for action in ["dismiss", "silence"] {
+    let stale: serde_json::Value = test::call_and_read_body_json(
+      &app,
+      test::TestRequest::post()
+        .uri(&format!("/{action}/{}", a.id))
+        .to_request(),
+    )
+    .await;
+    assert_eq!(stale["stopped"], false);
+  }
+  assert!(commands.try_recv().is_err());
+  // Clearing A resumes an outstanding completion instead of silencing it.
+  let _: serde_json::Value = test::call_and_read_body_json(
+    &app,
+    test::TestRequest::post()
+      .uri(&format!("/dismiss/{}", replacement.id))
+      .to_request(),
+  )
+  .await;
+  assert_eq!(state.notifications.lock().unwrap().active, others);
+  assert!(matches!(commands.try_recv().unwrap(), AudioCommand::PlayLoop(s) if s.name == "done"));
+  let stop = test::TestRequest::post().uri("/stop").to_request();
+  assert_eq!(
+    test::call_service(&app, stop).await.status(),
+    StatusCode::OK
+  );
+  assert!(state.notifications.lock().unwrap().active.is_empty());
+  assert!(matches!(
+    commands.try_recv().unwrap(),
+    AudioCommand::StopAll
+  ));
+}
+
+#[actix_web::test]
+async fn invalid_session_ids_cannot_replace_existing_rows() {
+  let (state, commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  let original: crate::notifications::Notification = test::call_and_read_body_json(
+    &app,
+    test::TestRequest::post()
+      .uri("/all_tasks_finished")
+      .set_json(serde_json::json!({"session_id": "keep", "title": "Keep", "message": "Original"}))
+      .to_request(),
+  )
+  .await;
+  commands.try_recv().unwrap();
+  for session in [
+    serde_json::json!(""),
+    serde_json::json!("  "),
+    serde_json::json!("bad\nid"),
+    serde_json::json!("x".repeat(257)),
+    serde_json::json!(123),
+  ] {
+    let response = test::call_service(
+      &app,
+      test::TestRequest::post()
+        .uri("/awaiting_user_input")
+        .set_json(serde_json::json!({"session_id": session, "title": "Bad", "message": "Rejected"}))
+        .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+  }
+  assert_eq!(state.notifications.lock().unwrap().active, vec![original]);
+  assert!(commands.try_recv().is_err());
 }

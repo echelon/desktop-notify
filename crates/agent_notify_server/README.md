@@ -23,10 +23,13 @@ The server listens on `127.0.0.1:43110` by default. Override with
 | Method | Path           | Behavior                                                                                     |
 |--------|----------------|----------------------------------------------------------------------------------------------|
 | GET    | `/`            | Static HTML page listing the API.                                                            |
-| POST   | `/awaiting_user_input` | JSON `{title, message}`; awaiting loop plus dismissible desktop alert. |
-| POST   | `/all_tasks_finished` | JSON `{title, message}`; done loop plus dismissible desktop alert. |
-| POST   | `/dismiss/{id}` | Dismiss this alert and stop audio only if it is still current. |
-| POST   | `/stop` | Stop all audio and clear the current notification. |
+| POST   | `/awaiting_user_input` | JSON `{title, message, session_id?}`; awaiting loop plus dismissible desktop alert. |
+| POST   | `/all_tasks_finished` | JSON `{title, message, session_id?}`; done loop plus dismissible desktop alert. |
+| GET    | `/notifications` | All session rows, newest update first. |
+| GET    | `/notification` | Latest row (legacy compatibility). |
+| POST   | `/silence/{id}` | Stop sound for this entry, keeping its status and focus target. |
+| POST   | `/dismiss/{id}` | Clear this entry only; stale alert IDs cannot clear newer updates. |
+| POST   | `/stop` | Stop all audio and clear every session entry. |
 | GET    | `/health` | Service identity, API version, and process ID for hook startup. |
 | GET    | `/alert_beep`  | Play `alert_beep_sound` once (mixes over any active loop).                                   |
 | GET    | `/alert_done`  | Play `alert_done_sound` once.                                                                |
@@ -37,10 +40,17 @@ The server listens on `127.0.0.1:43110` by default. Override with
 | GET    | `/stop`        | Stop everything — loops *and* queued one-shots.                                              |
 | GET    | `/state`       | Read-only JSON snapshot of the audio engine and loaded config. Does **not** change playback. |
 
-Mixing rules:
+Notification updates replace only the matching `session_id`. Omitted IDs use one
+legacy row. The shared sound loop prioritizes unsilenced questions, then the
+latest completion. Clearing or silencing a row leaves other sessions intact and
+plays the next outstanding alert if necessary. `/state` exposes `notifications`
+and `audio_notification_id` alongside its legacy fields. Session IDs are nonblank,
+at most 256 bytes, and cannot contain control characters. Rows are held in memory.
+
+Mixing rules for legacy sound-only endpoints:
 
 - One-shots mix with whichever loop is playing.
-- Requesting a new loop replaces the prior loop.
+- Requesting a new sound-only loop replaces the prior loop and clears all status rows.
 - `/stop` halts everything.
 - A missing config key makes the corresponding endpoint return `404`.
 

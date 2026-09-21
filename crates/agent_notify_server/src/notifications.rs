@@ -11,12 +11,16 @@ pub struct DesktopStatus {
   pub window_visible: bool,
   pub pid: u32,
   pub displayed_id: Option<String>,
+  #[serde(default)]
+  pub displayed_ids: Vec<String>,
   pub error: Option<String>,
 }
 
 #[derive(Default)]
 pub struct NotificationState {
-  pub active: Option<Notification>,
+  /// Most recently updated first; one entry per session (None is the legacy slot).
+  pub active: Vec<Notification>,
+  pub audio_id: Option<String>,
   pub desktop: DesktopStatus,
   pub desktop_seen: Option<Instant>,
 }

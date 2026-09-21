@@ -9,6 +9,7 @@ import codex_hook as hook
 
 class HookTests(unittest.TestCase):
     def setUp(self):
+        patch.dict(hook.os.environ, {}, clear=True).start()
         self.origin = patch.object(hook, "capture_origin", return_value=None).start()
         self.addCleanup(patch.stopall)
 
@@ -25,6 +26,29 @@ class HookTests(unittest.TestCase):
              patch.object(hook, "ensure_server"), patch.object(hook, "http", return_value={"id": "test"}) as post:
             hook.main()
         self.assertNotIn("origin", post.call_args.args[1])
+
+    def test_session_id_is_attached_to_every_notification_event(self):
+        for event in [
+            {"hook_event_name": "Stop", "last_assistant_message": "Done."},
+            {"hook_event_name": "Stop", "last_assistant_message": "Which option?"},
+            {"hook_event_name": "PermissionRequest", "tool_input": {"justification": "Approve?"}},
+            {"hook_event_name": "PreToolUse", "tool_name": "request_user_input"},
+            {"hook_event_name": "PreToolUse", "tool_name": "request_user_input_async"},
+        ]:
+            for session_id in ("codex-a", "codex-b"):
+                with self.subTest(event=event, session=session_id), \
+                     patch("sys.stdin", io.StringIO(json.dumps({**event, "session_id": session_id}))), \
+                     contextlib.redirect_stdout(io.StringIO()), patch.object(hook, "ensure_server"), \
+                     patch.object(hook, "http", return_value={"id": "test"}) as post:
+                    hook.main()
+                    self.assertEqual(post.call_args.args[1]["session_id"], session_id)
+
+    def test_session_fallback_and_legacy_payload(self):
+        event = {"hook_event_name": "Stop"}
+        self.assertNotIn("session_id", hook.notification_for(event)[1])
+        with patch.dict(hook.os.environ, {"CODEX_THREAD_ID": "shell-thread"}):
+            self.assertEqual(hook.notification_for(event)[1]["session_id"], "shell-thread")
+            self.assertEqual(hook.notification_for({**event, "session_id": "event-thread"})[1]["session_id"], "event-thread")
 
     def test_completion_has_outcome(self):
         endpoint, payload = hook.notification_for({"hook_event_name": "Stop", "cwd": "/tmp/my-project",

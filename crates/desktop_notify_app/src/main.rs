@@ -60,9 +60,9 @@ async fn focus_notification(
   let origin = {
     let snapshot = state.snapshot.lock().unwrap_or_else(|e| e.into_inner());
     let notification = snapshot
-      .notification
-      .as_ref()
-      .filter(|n| n.id == id)
+      .notifications
+      .iter()
+      .find(|n| n.id == id)
       .ok_or("This notification has been replaced or dismissed.")?;
     notification
       .origin
@@ -77,12 +77,12 @@ async fn focus_notification(
 #[tauri::command]
 fn window_ready(app: AppHandle, state: State<'_, AppState>) {
   state.ready.store(true, Ordering::SeqCst);
-  if state
+  if !state
     .snapshot
     .lock()
     .unwrap_or_else(|e| e.into_inner())
-    .notification
-    .is_some()
+    .notifications
+    .is_empty()
   {
     show_window(&app);
   }
@@ -90,13 +90,22 @@ fn window_ready(app: AppHandle, state: State<'_, AppState>) {
 
 #[tauri::command]
 async fn dismiss_notification(id: String, state: State<'_, AppState>) -> Result<(), String> {
+  update_notification(&id, "dismiss", &state).await
+}
+
+#[tauri::command]
+async fn silence_notification(id: String, state: State<'_, AppState>) -> Result<(), String> {
+  update_notification(&id, "silence", &state).await
+}
+
+async fn update_notification(id: &str, action: &str, state: &AppState) -> Result<(), String> {
   // IDs are server-generated hex strings; never allow user text into a URL path.
   if id.len() != 32 || !id.bytes().all(|c| c.is_ascii_hexdigit()) {
     return Err("Invalid notification ID".into());
   }
   state
     .client
-    .post(format!("{}/dismiss/{id}", state.service))
+    .post(format!("{}/{action}/{id}", state.service))
     .send()
     .await
     .map_err(|_| "Cannot reach the notification service. Please try again.".to_string())?
@@ -106,12 +115,12 @@ async fn dismiss_notification(id: String, state: State<'_, AppState>) -> Result<
   Ok(())
 }
 
-async fn read_notification(
+async fn read_notifications(
   client: &reqwest::Client,
   service: &str,
-) -> Result<Option<Notification>, reqwest::Error> {
+) -> Result<Vec<Notification>, reqwest::Error> {
   client
-    .get(format!("{service}/notification"))
+    .get(format!("{service}/notifications"))
     .send()
     .await?
     .error_for_status()?
@@ -124,24 +133,32 @@ fn start_polling(app: AppHandle) {
     let mut tick = 0u32;
     loop {
       let state = app.state::<AppState>();
-      let result = read_notification(&state.client, &state.service).await;
+      let result = read_notifications(&state.client, &state.service).await;
       let (snapshot, change, changed) = {
         let mut previous = state.snapshot.lock().unwrap_or_else(|e| e.into_inner());
         let next = match result {
-          Ok(notification) => Snapshot {
-            notification,
+          Ok(notifications) => Snapshot {
+            notifications,
             connected: true,
             error: None,
           },
           Err(_) => Snapshot {
-            notification: previous.notification.clone(),
+            notifications: previous.notifications.clone(),
             connected: false,
             error: Some("Waiting for the notification service…".into()),
           },
         };
         let change = visibility_change(
-          previous.notification.as_ref().map(|n| n.id.as_str()),
-          next.notification.as_ref().map(|n| n.id.as_str()),
+          &previous
+            .notifications
+            .iter()
+            .map(|n| n.id.as_str())
+            .collect::<Vec<_>>(),
+          &next
+            .notifications
+            .iter()
+            .map(|n| n.id.as_str())
+            .collect::<Vec<_>>(),
         );
         let changed = *previous != next;
         *previous = next.clone();
@@ -150,13 +167,18 @@ fn start_polling(app: AppHandle) {
       if changed {
         let _ = app.emit(EVENT, &snapshot);
         if let Some(tray) = app.tray_by_id("main") {
-          let tooltip = match snapshot.notification.as_ref() {
-            Some(n) => format!("Desktop Notify — {}", n.title),
-            None => "Desktop Notify — All caught up".into(),
+          let count = snapshot.notifications.len();
+          let tooltip = if count == 0 {
+            "Desktop Notify — All caught up".into()
+          } else {
+            format!(
+              "Desktop Notify — {count} agent status{}",
+              if count == 1 { "" } else { "es" }
+            )
           };
           let _ = tray.set_tooltip(Some(&tooltip));
           #[cfg(target_os = "macos")]
-          let _ = tray.set_title(snapshot.notification.as_ref().map(|_| "•"));
+          let _ = tray.set_title((!snapshot.notifications.is_empty()).then_some("•"));
         }
       }
       if state.ready.load(Ordering::SeqCst) {
@@ -172,7 +194,9 @@ fn start_polling(app: AppHandle) {
           .is_some_and(|w| w.is_visible().unwrap_or(false));
         let report = serde_json::json!({
           "presentation": "tauri", "window_visible": visible, "pid": std::process::id(),
-          "displayed_id": snapshot.notification.as_ref().map(|n| &n.id), "error": snapshot.error,
+          "displayed_id": snapshot.notifications.first().map(|n| &n.id),
+          "displayed_ids": snapshot.notifications.iter().map(|n| &n.id).collect::<Vec<_>>(),
+          "error": snapshot.error,
         });
         let _ = state
           .client
@@ -259,7 +283,8 @@ fn main() {
       window_ready,
       hide_window,
       focus_notification,
-      dismiss_notification
+      dismiss_notification,
+      silence_notification
     ])
     .setup(|app| {
       #[cfg(target_os = "macos")]

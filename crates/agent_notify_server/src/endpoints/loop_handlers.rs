@@ -61,7 +61,8 @@ fn play_loop_or_404(
     .notifications
     .lock()
     .unwrap_or_else(|e| e.into_inner());
-  current.active = None;
+  current.active.clear();
+  current.audio_id = None;
   state.audio.play_loop(spec);
   HttpResponse::Ok().body("ok\n")
 }

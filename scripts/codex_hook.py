@@ -32,7 +32,7 @@ def http(path, payload=None, timeout=2):
 def running():
     try:
         result = http("/health")
-        return result.get("service") == "desktop-notify" and result.get("api_version") == 2
+        return result.get("service") == "desktop-notify" and result.get("api_version") in (2, 3)
     except (OSError, ValueError):
         return False
 
@@ -131,7 +131,13 @@ def notification_for(event):
         return None
     first_line = next((line.strip() for line in plain(message).splitlines() if line.strip()), "Agent update")
     title = clip(event.get("title") or f"{cwd}: {first_line}", 120)
-    return endpoint, {"title": title, "message": clip(message, 4000)}
+    payload = {"title": title, "message": clip(message, 4000)}
+    # Codex supplies this on Stop, PermissionRequest and PreToolUse alike.
+    # An explicit event ID wins over an inherited parent shell's thread ID.
+    session_id = event.get("session_id") or os.environ.get("CODEX_THREAD_ID")
+    if isinstance(session_id, str) and session_id.strip():
+        payload["session_id"] = session_id
+    return endpoint, payload
 
 
 def main():

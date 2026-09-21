@@ -9,12 +9,12 @@ import time
 import codex_hook as hook
 from codex_rpc import CodexRPC
 from install_hooks import ROOT
-from smoke_test import eventually, stop
+from smoke_test import eventually, session_notification, clear_sessions
 
 
 def run():
     hook.ensure_server()
-    stop()
+    thread_id = None
     answered = False
     completed = False
     try:
@@ -38,9 +38,9 @@ def run():
                     print(method, message.get("params"), flush=True)
                 if method == "item/tool/requestUserInput":
                     params = message["params"]
-                    state = eventually(lambda: (s if (s := hook.http("/state"))["notification"] and
-                                                s["notification"]["kind"] == "awaiting_user_input" else None))
-                    assert "Continue the Desktop Notify integration test" in state["notification"]["message"]
+                    notification = eventually(lambda: (n if (n := session_notification(thread_id)) and
+                                                       n["kind"] == "awaiting_user_input" else None))
+                    assert "Continue the Desktop Notify integration test" in notification["message"]
                     eventually(lambda: hook.http("/state")["audio"]["loop_name"] == "await")
                     print("PASS actual Codex request_user_input -> awaiting notification and sound", flush=True)
                     answers = {q["id"]: {"answers": ["Continue"]} for q in params["questions"]}
@@ -53,11 +53,13 @@ def run():
                 elif "id" in message and "method" in message:
                     raise AssertionError(f"Unexpected server request: {method}")
             assert answered and completed, "Codex did not complete the question test"
-            eventually(lambda: (n := hook.http("/notification")) and n["kind"] == "all_tasks_finished")
-            eventually(lambda: hook.http("/state")["audio"]["loop_name"] == "done")
+            eventually(lambda: (n := session_notification(thread_id)) and n["kind"] == "all_tasks_finished")
+            # Another session may still have a question with sound priority.
+            assert not session_notification(thread_id)["silenced"]
             print("PASS actual Codex Stop -> completion notification and sound", flush=True)
     finally:
-        stop()
+        if thread_id:
+            clear_sessions([thread_id])
 
 
 if __name__ == "__main__":

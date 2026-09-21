@@ -9,27 +9,18 @@
 <body>
   <div class="app">
     <header id="titlebar" data-tauri-drag-region>
-      <span class="brand" data-tauri-drag-region><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg> Notifications</span>
+      <span class="brand" data-tauri-drag-region><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg> Notifications <span id="count" class="count"></span></span>
       <button id="hide" class="icon-button" title="Hide to tray (Esc)" aria-label="Hide to tray">−</button>
     </header>
     <main>
-      <section id="alert" hidden aria-live="polite">
-        <div class="eyebrow"><span class="pulse"></span><span id="kind"></span></div>
-        <div class="task-heading"><h1 id="title"></h1><button id="focus" class="secondary" title="Focus the requesting terminal">Focus</button></div>
-        <p id="focus-status" class="focus-status" role="status" hidden></p>
-        <div id="message" class="message"></div>
-      </section>
+      <section id="notifications" aria-label="Agent statuses" aria-live="polite" hidden></section>
       <section id="empty" class="empty">
         <div class="empty-icon">✓</div>
         <h1>All caught up</h1>
-        <p>Your agent’s next update will appear here.</p>
+        <p>Your agents’ next updates will appear here.</p>
       </section>
     </main>
     <div id="error" class="error" role="alert" hidden></div>
-    <div id="actions" class="actions" hidden>
-      <p>Sound repeats until you dismiss this alert.</p>
-      <button id="dismiss" class="primary">Dismiss &amp; Stop <span>↵</span></button>
-    </div>
     <footer><span id="connection" class="connection">Connecting…</span><span class="footer-hint">Always on top · <kbd>esc</kbd> to hide</span></footer>
     <div id="resize" aria-hidden="true"></div>
   </div>

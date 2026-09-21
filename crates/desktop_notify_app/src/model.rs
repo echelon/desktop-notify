@@ -4,7 +4,7 @@ pub use notify_types::Notification;
 
 #[derive(Clone, Default, Serialize, PartialEq, Eq)]
 pub struct Snapshot {
-  pub notification: Option<Notification>,
+  pub notifications: Vec<Notification>,
   pub connected: bool,
   pub error: Option<String>,
 }
@@ -16,12 +16,14 @@ pub enum VisibilityChange {
   Keep,
 }
 
-/// Only a new alert opens the window. Polling must never undo a user's hide.
-pub fn visibility_change(previous: Option<&str>, next: Option<&str>) -> VisibilityChange {
-  match (previous, next) {
-    (a, Some(b)) if a != Some(b) => VisibilityChange::Show,
-    (Some(_), None) => VisibilityChange::Hide,
-    _ => VisibilityChange::Keep,
+/// New/replaced alerts open the window; clearing one row cannot hide the others.
+pub fn visibility_change(previous: &[&str], next: &[&str]) -> VisibilityChange {
+  if next.iter().any(|id| !previous.contains(id)) {
+    VisibilityChange::Show
+  } else if !previous.is_empty() && next.is_empty() {
+    VisibilityChange::Hide
+  } else {
+    VisibilityChange::Keep
   }
 }
 
@@ -31,24 +33,33 @@ mod tests {
 
   #[test]
   fn new_and_replacement_alerts_open_the_window() {
-    assert_eq!(visibility_change(None, Some("a")), VisibilityChange::Show);
+    assert_eq!(visibility_change(&[], &["a"]), VisibilityChange::Show);
     assert_eq!(
-      visibility_change(Some("a"), Some("b")),
+      visibility_change(&["a"], &["b", "a"]),
+      VisibilityChange::Show
+    );
+    assert_eq!(
+      visibility_change(&["a", "b"], &["c", "b"]),
       VisibilityChange::Show
     );
   }
 
   #[test]
-  fn hidden_alert_stays_hidden_until_replaced_or_recalled() {
+  fn unchanged_or_reordered_alerts_preserve_visibility() {
+    assert_eq!(visibility_change(&["a"], &["a"]), VisibilityChange::Keep);
     assert_eq!(
-      visibility_change(Some("a"), Some("a")),
+      visibility_change(&["a", "b"], &["b", "a"]),
       VisibilityChange::Keep
     );
   }
 
   #[test]
-  fn dismissal_hides_but_idle_tray_recall_stays_open() {
-    assert_eq!(visibility_change(Some("a"), None), VisibilityChange::Hide);
-    assert_eq!(visibility_change(None, None), VisibilityChange::Keep);
+  fn removing_one_row_keeps_the_other_visible() {
+    assert_eq!(
+      visibility_change(&["a", "b"], &["b"]),
+      VisibilityChange::Keep
+    );
+    assert_eq!(visibility_change(&["a"], &[]), VisibilityChange::Hide);
+    assert_eq!(visibility_change(&[], &[]), VisibilityChange::Keep);
   }
 }
