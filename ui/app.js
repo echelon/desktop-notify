@@ -32,7 +32,7 @@ const CLAUDE_MASCOT = [' ▐▛███▜▌', '▝▜█████▛▘', 
   [...line].flatMap((char, column) => [...(QUADRANTS[char] || '0000')].flatMap((filled, quadrant) =>
     filled === '1' ? [`M${column * 2 + (quadrant % 2)} ${row * 4 + Math.floor(quadrant / 2) * 2}h1v2h-1z`] : []))).join('');
 const AGENTS = {
-  claude_code: { label: 'Claude Code', path: CLAUDE_MASCOT, viewBox: '0 0 18 12' },
+  claude_code: { label: 'Claude Code', path: CLAUDE_MASCOT, viewBox: '1 0 16 10' },
   codex: { label: 'Codex', src: 'assets/codex.svg' },
 };
 

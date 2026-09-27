@@ -28,7 +28,9 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 5px 16px; }
 .row-heading { display: flex; align-items: flex-start; gap: 12px; }
 .row-info { flex: 1; min-width: 0; }
 .agent-icon { width: 13px; height: 13px; flex-shrink: 0; margin-left: -2px; }
-.agent-icon svg { display: block; width: 13px; height: 13px; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.agent-icon svg { display: block; width: 100%; height: 100%; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+/* The wide mascot needs its own aspect ratio to match the knot's visual height. */
+.agent-icon[data-agent="claude_code"] { width: 21px; height: 17px; }
 .agent-mark.claude_code { fill: #d97757; stroke: none; shape-rendering: crispEdges; }
 .agent-icon[data-agent="codex"] { width: 17px; height: 17px; }
 .agent-icon img { display: block; width: 100%; height: 100%; object-fit: contain; }

@@ -35,7 +35,7 @@ Press Ctrl+C to stop the server.
 
 Open **http://127.0.0.1:43110/** in a browser for the web interface: live tasks
 with Dismiss/Clear, the sound controls, and the full API reference. The tray
-app's **API ↗** link opens it, and each app button's tooltip names its REST call.
+app's **Web API ↗** link opens it, and each app button's tooltip names its REST call.
 
 The status endpoints (`/awaiting_user_input`, `/all_tasks_finished`,
 `/task_failed`) require nonblank `title` (up to 200 characters) and `message` (up
@@ -227,7 +227,7 @@ frontend is plain HTML/CSS/JavaScript bundled by Tauri; no Node build step is ne
   message**) for the full text. Only alerting rows open the window or mark the tray.
 - Sound is global. The bar above the status line has **Stop sound** (`POST
   /sound/stop`, retaining every row), **Snooze 1 min**, and **Snooze 5 min**
-  (`POST /sound/snooze`), with a countdown while snoozed. The footer's **API ↗**
+  (`POST /sound/snooze`), with a countdown while snoozed. The footer's **Web API ↗**
   opens the web interface.
 - **×** calls `POST /dismiss/{id}` and removes only that row. The window stays open
   while other entries remain; clearing the last entry hides it.

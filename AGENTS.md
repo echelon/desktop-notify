@@ -152,7 +152,7 @@ W = web interface at `GET /`, S = `stop-sound` shell alias in
 | `POST /stop` | W ("Clear all tasks") |
 | `GET /stop` | shells still holding the old `stop-sound` alias |
 | `POST /desktop/status` | A (heartbeat) |
-| `GET /` | you, in a browser; the app's **API ↗** link opens it |
+| `GET /` | you, in a browser; the app's **Web API ↗** link opens it |
 
 API 4 added task states, `/working`, `/task_failed`, `/acknowledge`, and `agent`.
 Hooks skip or adapt new calls on older services (`codex_hook.compatible`).
@@ -260,7 +260,7 @@ any pending ones.
   plus Clear all, Resume, the REST reference, curl examples, and a "last request"
   line showing the exact call each button made.
 - **Self-documenting app:** each tray-app button's tooltip names its REST call,
-  and the footer's **API ↗** opens the web interface.
+  and the footer's **Web API ↗** opens the web interface.
 - **Sound bar:** **Stop sound** acknowledges every alerting row. **Snooze 1/5 min**
   mutes all sound until a recorded wall-clock time. The service compares it with
   the clock whenever the app polls, and resumes the loop after it passes. A
