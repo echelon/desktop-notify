@@ -27,6 +27,19 @@ Resolve repository paths from `__file__`, since hooks run from other directories
 
 ## Best-effort metadata
 
+- Shared Codex daemons inherit another client's terminal environment. Never use
+  that environment as a session origin. `codex_terminal.py` transparently relays
+  local TUI WebSocket traffic to the same daemon and registers exact session IDs
+  before forwarding turn requests/start-resume-fork responses. `session_origin.py`
+  stores only allowed terminal hints plus client PID/start time; hooks validate
+  that live client before discovery. Never infer a binding from cwd, timing,
+  conversation text, or the frontmost window. An unbound detached daemon sends
+  `origin: {}` to replace stale hints, while notifications still work.
+- The terminal bridge must preserve frames and keep conversation/approval data
+  out of logs. Metadata failures must not interrupt Codex. Pass utility commands
+  and explicit remote hosts through; keep the shared daemon and top-level
+  computer-use `notify` configuration. Its shell function is installed by
+  `install_terminal_bridge.py`, with preview and backups.
 - Keep context/origin collection independent: failure of either must not suppress
   the alert. Discovery must not execute repository code or call models/network
   services. Origin collection must not open apps; the Ghostty probe is the only

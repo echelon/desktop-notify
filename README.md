@@ -292,7 +292,32 @@ Accessibility. Focus only activates running apps. It reports failure if the app
 has exited. Without an app identity, session/window hints are searched among
 the three supported terminals; an ambiguous app fallback is not guessed.
 
-The Codex hook automatically captures process and terminal hints. Inside tmux,
+Codex's shared daemon can inherit a different terminal's `TMUX_PANE`. Install
+the terminal bridge to bind each session to the client that actually launches,
+resumes, or submits it:
+
+```sh
+python3 scripts/install_terminal_bridge.py            # Preview
+python3 scripts/install_terminal_bridge.py --install
+source ~/.config/shell/aliases/40-codex-notify.sh      # Existing shells
+```
+
+The generated `codex` shell function routes local interactive launches through
+a private Unix-socket relay to the **same shared daemon**. It preserves model,
+tool, approval, and hook traffic, registers session IDs before hooks run, and
+stores only terminal hints and client process identity in ignored
+`target/session-origins/`. Multiple Codex and Claude sessions remain independent,
+including sessions in the same repository. New shells using this machine's
+`~/.config/shell/aliases.sh` loader load it automatically; other shell setups
+should source the generated file explicitly. Existing Codex clients must be
+resumed through the function once. Utilities and explicit remote hosts pass
+through unchanged. No daemon restart or `--no-daemon` flag is required.
+
+Unregistered detached Codex hooks clear their origin rather than targeting the
+daemon's unrelated terminal. The hook log records the resulting origin. Claude
+and embedded Codex keep using their process ancestry.
+
+The hook automatically captures process and terminal hints. Inside tmux,
 it uses the most recently active client attached to the originating session to
 find the GUI app, and records the pane/socket when available. Selecting a tmux
 pane is best effort and requires its socket; failure still permits app focus.

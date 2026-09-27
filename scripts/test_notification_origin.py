@@ -64,6 +64,28 @@ class OriginTests(unittest.TestCase):
         self.assertEqual(result["tty"], "/dev/ttys002")
         self.assertEqual(result["pid"], 42)
 
+    def test_detached_codex_cannot_reuse_another_clients_terminal_environment(self):
+        processes = {42: (1, "??", "/packages/app-server-daemon/bin/codex")}
+        env = {"TMUX": "/tmp/tmux-test,90,1", "TMUX_PANE": "%5",
+               "TERM_PROGRAM": "ghostty", "NOTIFY_TERMINAL_ID": "other-session"}
+        with patch.object(origin, "process_table", return_value=processes), \
+             patch.object(origin.os, "getppid", return_value=42), patch.object(origin.sys, "platform", "darwin"), \
+             patch.object(origin, "tmux_context") as tmux, patch.object(origin, "ghostty_origin") as ghostty:
+            self.assertEqual(origin.capture_origin(env), {})
+        tmux.assert_not_called()
+        ghostty.assert_not_called()
+
+    def test_terminal_codex_and_claude_keep_independent_origins(self):
+        processes = {42: (1, "ttys001", "codex"), 43: (1, "ttys002", "codex"),
+                     44: (1, "ttys003", "claude"), 45: (1, "ttys004", "claude")}
+        with patch.object(origin, "process_table", return_value=processes), \
+             patch.object(origin.sys, "platform", "darwin"):
+            for pid, (_, tty, _) in processes.items():
+                with self.subTest(pid=pid), patch.object(origin.os, "getppid", return_value=pid):
+                    result = origin.capture_origin({"TERM_PROGRAM": "ghostty"})
+                    self.assertEqual(result["pid"], pid)
+                    self.assertEqual(result["tty"], "/dev/" + tty)
+
     def test_unavailable_tmux_is_optional(self):
         with patch.object(origin, "command", return_value=""):
             result, pid = origin.tmux_context({"TMUX": "/tmp/tmux-test,90,1", "TMUX_PANE": "%5"})

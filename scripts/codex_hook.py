@@ -294,8 +294,8 @@ def post(event, endpoint, payload):
         # Optional context must never suppress an alert.
         pass
     try:
-        origin = capture_origin()
-        if origin:
+        origin = capture_origin(session_id=payload.get("session_id") if agent == "codex" else None)
+        if origin is not None:
             payload["origin"] = origin
     except Exception:
         # A missing terminal hint must never suppress the notification.
@@ -339,6 +339,10 @@ def main():
             entry["updated"] = result.get("updated", True)
             if isinstance(row, dict):
                 entry.update(state=row.get("state"), id=row.get("id"))
+                # Keep the focus decision inspectable after the row is replaced.
+                # This contains only process/terminal hints, never environment.
+                if "origin" in row:
+                    entry["origin"] = row["origin"]
         # A Stop hook must emit JSON, and no hook should change tool permissions.
         print("{}")
     except Exception as error:

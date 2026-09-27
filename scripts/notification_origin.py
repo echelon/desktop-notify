@@ -11,6 +11,8 @@ import sys
 import time
 import uuid
 
+import session_origin
+
 REGISTRATIONS = Path(__file__).resolve().parents[1] / "target/terminal-origins.json"
 GHOSTTY = "com.mitchellh.ghostty"
 GHOSTTY_SCRIPT = Path(__file__).with_name("ghostty_surface.applescript")
@@ -238,14 +240,26 @@ def tmux_context(env):
     return origin, None
 
 
-def capture_origin(env=None, include_registered=True):
+def capture_origin(env=None, include_registered=True, session_id=None):
     if sys.platform != "darwin":
         return None
     env = os.environ if env is None else env
     processes = process_table()
     parent = os.getppid()
+    binding = session_origin.load(session_id, processes) if session_id else None
+    if binding:
+        parent, env = binding
     chain = list(ancestry(processes, parent))
     source_pid = next((pid for pid, _, exe in chain if Path(exe).name in ("codex", "claude")), parent)
+    # A shared Codex app-server inherits the terminal environment of whichever
+    # client started it, then serves unrelated sessions. Its TMUX/TERM_PROGRAM
+    # and even NOTIFY_* hints do not identify the current hook's session. Only
+    # trust the terminal-side session binding, or an ancestor with a controlling
+    # terminal (older/embedded CLI). An explicit empty origin also
+    # clears a previously recorded, incorrect origin on the service.
+    source = processes.get(source_pid)
+    if source and Path(source[2]).name == "codex" and source[1] in ("??", "?", "-"):
+        return application(processes, source_pid)
     origin = {"pid": source_pid}
     tmux, client_pid = tmux_context(env)
     origin.update(tmux)

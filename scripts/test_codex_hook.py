@@ -34,6 +34,11 @@ class HookTests(unittest.TestCase):
             hook.main()
         self.assertNotIn("origin", post.call_args.args[1])
 
+    def test_empty_origin_explicitly_replaces_stale_terminal_hints(self):
+        self.origin.return_value = {}
+        posts, _ = self.run_hook({"hook_event_name": "Stop", "session_id": "daemon-session"})
+        self.assertEqual(posts[0][1]["origin"], {})
+
     def test_session_id_is_attached_to_every_notification_event(self):
         for event in [
             {"hook_event_name": "Stop", "last_assistant_message": "Done."},

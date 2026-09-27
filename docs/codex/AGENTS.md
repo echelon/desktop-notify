@@ -25,6 +25,15 @@ computer-use integration and must be preserved.
 
 ## Exact terminal focus
 
+For shared-daemon Codex, the terminal-side `scripts/codex_terminal.py` bridge
+binds the exact session ID to its live terminal client before hooks run. Hooks
+validate the client PID/start time and use its terminal hints from ignored
+`target/session-origins/`. Never use the shared daemon's inherited `TMUX_PANE`
+as a session origin or guess by cwd. Keep the shared daemon enabled. Install the
+shell function with `python3 @DESKTOP_NOTIFY_ROOT@/scripts/install_terminal_bridge.py --install`;
+new shells load it through the shared aliases loader, and existing sessions
+register when resumed through it. Claude keeps using direct process ancestry.
+
 Hooks discover the originating tmux socket/pane/server and its most recently
 active attached client. That client's outer TTY and process ancestry identify
 Ghostty. A short, locked OSC-title probe maps the TTY to Ghostty's AppleScript

@@ -280,6 +280,16 @@ any pending ones.
 
 Capture happens in the hook, at alert time:
 
+0. **Shared Codex daemon:** its process environment belongs to the terminal that
+   started the daemon, not necessarily this session. The terminal-side
+   `scripts/codex_terminal.py` bridge uses the normal shared daemon through a
+   private Unix WebSocket relay. Before forwarding a turn request or a successful
+   start/resume/fork response, it binds that exact session ID to the live terminal
+   client's PID, start time, and allowed terminal environment. Hooks load this
+   binding from ignored `target/session-origins/`, validate the process lifetime,
+   and discover origin from that client. Claude and embedded Codex still use
+   their direct ancestry. An unbound detached Codex daemon sends an empty origin
+   to clear stale hints; it must never reuse the daemon's terminal environment.
 1. **Process and app:** walk the hook's process ancestry to the `codex`/`claude`
    process (`pid`). Inside tmux, the server is daemonized and its ancestry does
    not reach the GUI. Instead, ask the tmux server named by `$TMUX`, using its
@@ -356,6 +366,12 @@ become exact at the session's next hook event.
   denied the process permission to control Ghostty. Allow it in System Settings →
   Privacy & Security → Automation, or run `scripts/register_terminal.py` in that
   window.
+- **Codex focuses another session while Claude works:** check for a shared Codex
+  daemon. Install `python3 scripts/install_terminal_bridge.py --install` and load
+  its shell function (new shells source it via `~/.config/shell/aliases.sh`).
+  Resume existing sessions through that function to register their terminal.
+  The bridge keeps the shared daemon enabled; no `--no-daemon` workaround is
+  needed. The hook log now includes the resulting origin for diagnosis.
 - **Unit tests** must patch `notification_origin.ghostty` and TTY writes. Never
   script the real Ghostty or write titles to real TTYs from tests.
 
