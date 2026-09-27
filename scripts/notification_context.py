@@ -101,9 +101,10 @@ def user_request(value):
     if not isinstance(value, str):
         return None
     # Bootstrap context is sent with the user role too; it isn't the user's task.
-    if value.lstrip().startswith(("# AGENTS.md instructions", "<INSTRUCTIONS>")):
+    # Claude Code also records slash-command echoes/output as user text.
+    if value.lstrip().startswith(("# AGENTS.md instructions", "<INSTRUCTIONS>", "<command-", "<local-command-")):
         return None
-    value = re.sub(r"<(environment_context|environment_details|user_instructions)>.*?</\1>", "", value, flags=re.S)
+    value = re.sub(r"<(environment_context|environment_details|user_instructions|system-reminder)>.*?</\1>", "", value, flags=re.S)
     return text(value, LIMITS["current_ask"])
 
 
@@ -127,6 +128,16 @@ def transcript_context(path):
     for line in data.splitlines():
         try:
             record = json.loads(line)
+            if record.get("type") == "user" and not record.get("isMeta"):
+                # Claude Code: prompts are string content; tool results are lists
+                # containing tool_result blocks and are not user requests.
+                content = record.get("message", {}).get("content")
+                if isinstance(content, list) and all(isinstance(c, dict) and c.get("type") == "text" for c in content):
+                    content = "\n".join(c.get("text", "") for c in content)
+                request = user_request(content)
+                if request:
+                    result = {"current_ask": request}
+                continue
             item = record.get("payload", {})
             if not isinstance(item, dict):
                 continue

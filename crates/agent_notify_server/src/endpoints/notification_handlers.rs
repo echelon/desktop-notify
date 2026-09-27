@@ -1,10 +1,11 @@
 use std::time::Instant;
 
 use actix_web::{web, HttpResponse};
+use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::audio_player::LoopSpec;
-use crate::notifications::{DesktopStatus, Notification};
+use crate::notifications::{DesktopStatus, Notification, NotificationState};
 use crate::server_state::ServerState;
 
 #[derive(Deserialize)]
@@ -118,29 +119,61 @@ fn notify(state: &ServerState, request: NotificationRequest, done: bool) -> Http
 }
 
 pub async fn current_notification(state: web::Data<ServerState>) -> HttpResponse {
-  let current = state
-    .notifications
-    .lock()
-    .unwrap_or_else(|e| e.into_inner());
+  let current = lock_and_resume(&state);
   HttpResponse::Ok().json(current.active.first())
 }
 
 pub async fn list_notifications(state: web::Data<ServerState>) -> HttpResponse {
-  let current = state
-    .notifications
-    .lock()
-    .unwrap_or_else(|e| e.into_inner());
+  let current = lock_and_resume(&state);
   HttpResponse::Ok().json(&current.active)
 }
 
+/// A snooze is a recorded wall-clock deadline, not a sleeping timer. A deadline
+/// further out than the longest snooze means the clock moved backwards, so it is
+/// treated as elapsed rather than muting sound indefinitely.
+fn snooze_active(current: &NotificationState, now: DateTime<Utc>) -> bool {
+  current
+    .snoozed_until
+    .is_some_and(|until| until > now && until - now <= notify_types::MAX_SNOOZE)
+}
+
+/// Locks state and resumes sound if a snooze deadline has passed. The tray app
+/// polls `/notifications` every 400 ms, so that poll is what notices expiry;
+/// playback otherwise remains unchanged by reads.
+pub(crate) fn lock_and_resume(state: &ServerState) -> std::sync::MutexGuard<'_, NotificationState> {
+  let mut current = state
+    .notifications
+    .lock()
+    .unwrap_or_else(|e| e.into_inner());
+  if current.snoozed_until.is_some() && !snooze_active(&current, Utc::now()) {
+    reconcile_audio(state, &mut current);
+  }
+  current
+}
+
+pub(crate) fn sound_state(current: &NotificationState) -> notify_types::SoundState {
+  notify_types::SoundState {
+    snoozed_until: current.snoozed_until,
+    alerting: current.active.iter().any(|n| !n.silenced),
+  }
+}
+
 /// One shared loop: questions take priority, then the most recent completion.
-/// Removing/silencing another row must not restart or stop this loop.
-fn reconcile_audio(state: &ServerState, current: &mut crate::notifications::NotificationState) {
-  let next = current
-    .active
-    .iter()
-    .find(|n| !n.silenced && n.kind == "awaiting_user_input")
-    .or_else(|| current.active.iter().find(|n| !n.silenced));
+/// Removing/silencing another row must not restart or stop this loop. A global
+/// snooze mutes the loop without silencing rows, so it resumes afterwards.
+fn reconcile_audio(state: &ServerState, current: &mut NotificationState) {
+  if current.snoozed_until.is_some() && !snooze_active(current, Utc::now()) {
+    current.snoozed_until = None;
+  }
+  let next = if current.snoozed_until.is_some() {
+    None
+  } else {
+    current
+      .active
+      .iter()
+      .find(|n| !n.silenced && n.kind == "awaiting_user_input")
+      .or_else(|| current.active.iter().find(|n| !n.silenced))
+  };
   let next_id = next.map(|n| n.id.clone());
   if current.audio_id == next_id {
     return;
@@ -215,14 +248,72 @@ pub async fn silence(state: web::Data<ServerState>, id: web::Path<String>) -> Ht
   HttpResponse::Ok().json(DismissResponse { stopped })
 }
 
-pub async fn desktop_status(
-  state: web::Data<ServerState>,
-  status: web::Json<DesktopStatus>,
-) -> HttpResponse {
+pub async fn sound(state: web::Data<ServerState>) -> HttpResponse {
+  let current = lock_and_resume(&state);
+  HttpResponse::Ok().json(sound_state(&current))
+}
+
+/// Global Stop sound: silences every current row and cancels any snooze. Later
+/// updates are fresh alerts and sound again.
+pub async fn silence_all(state: web::Data<ServerState>) -> HttpResponse {
   let mut current = state
     .notifications
     .lock()
     .unwrap_or_else(|e| e.into_inner());
+  for notification in &mut current.active {
+    notification.silenced = true;
+  }
+  current.snoozed_until = None;
+  reconcile_audio(&state, &mut current);
+  HttpResponse::Ok().json(sound_state(&current))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnoozeRequest {
+  /// Snooze length in whole seconds, converted to a `TimeDelta` on receipt.
+  seconds: i64,
+}
+
+/// Mutes the shared loop until now + `seconds`. Rows keep their silenced flags,
+/// and alerts arriving during the snooze wait for it to end. Snoozing again
+/// replaces the previous deadline.
+pub async fn snooze(
+  state: web::Data<ServerState>,
+  request: web::Json<SnoozeRequest>,
+) -> HttpResponse {
+  let duration = TimeDelta::try_seconds(request.seconds)
+    .filter(|duration| *duration > TimeDelta::zero() && *duration <= notify_types::MAX_SNOOZE);
+  let Some(duration) = duration else {
+    return HttpResponse::BadRequest().body(format!(
+      "seconds must be between 1 and {}\n",
+      notify_types::MAX_SNOOZE.num_seconds()
+    ));
+  };
+  let mut current = state
+    .notifications
+    .lock()
+    .unwrap_or_else(|e| e.into_inner());
+  current.snoozed_until = Some(Utc::now() + duration);
+  reconcile_audio(&state, &mut current);
+  HttpResponse::Ok().json(sound_state(&current))
+}
+
+pub async fn resume_sound(state: web::Data<ServerState>) -> HttpResponse {
+  let mut current = state
+    .notifications
+    .lock()
+    .unwrap_or_else(|e| e.into_inner());
+  current.snoozed_until = None;
+  reconcile_audio(&state, &mut current);
+  HttpResponse::Ok().json(sound_state(&current))
+}
+
+pub async fn desktop_status(
+  state: web::Data<ServerState>,
+  status: web::Json<DesktopStatus>,
+) -> HttpResponse {
+  let mut current = lock_and_resume(&state);
   current.desktop = status.into_inner();
   current.desktop_seen = Some(Instant::now());
   HttpResponse::Ok().finish()

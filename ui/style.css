@@ -40,8 +40,15 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 5px 16px; }
 .summary { color: var(--muted); font-size: 11px; cursor: pointer; width: fit-content; }
 .message { padding-top: 8px; color: #afbdd4; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.65; user-select: text; -webkit-user-select: text; }
 .focus-status { margin: 8px 0 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
-.row-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 9px; }
-.sound-status { color: var(--muted); font-size: 10px; }
+.row-sound { color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; flex-shrink: 0; }
+.sound-controls { padding: 10px 16px 9px; border-top: 1px solid var(--border); }
+.sound-buttons { display: flex; gap: 8px; }
+.sound-button { flex: 1; min-width: 0; padding: 9px 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sound-button:hover:not(:disabled) { border-color: var(--accent); }
+.sound-button.stop { flex: 1.3; color: #0b1220; background: #f4bc70; border-color: #f4bc70; }
+.sound-button.stop:hover:not(:disabled) { background: #f7cd92; border-color: #f7cd92; }
+.sound-status { margin: 7px 0 0; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.sound-controls.snoozed .sound-status { color: #b7a6ff; }
 footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 15px; border-top: 1px solid var(--border); color: var(--muted); font-size: 10px; user-select: none; -webkit-user-select: none; }
 .connection::before { content: ''; display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: #7f8fae; margin-right: 6px; }
 .connection.online::before { background: #7cdbad; }
@@ -54,4 +61,4 @@ kbd { font: inherit; }
 #resize { position: absolute; bottom: 0; right: 0; width: 12px; height: 12px; cursor: nwse-resize; }
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-thumb { border-radius: 5px; background: var(--border); }
-@media (max-width: 400px) { .footer-hint { display: none; } main { padding: 5px 12px; } .row-heading { gap: 6px; } }
+@media (max-width: 400px) { .footer-hint { display: none; } main { padding: 5px 12px; } .sound-controls { padding: 9px 12px; } .sound-buttons { gap: 6px; } .sound-button { font-size: 12px; } .row-heading { gap: 6px; } }

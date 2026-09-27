@@ -1,3 +1,4 @@
+use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -15,6 +16,21 @@ pub struct Notification {
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub origin: Option<Origin>,
 }
+
+/// Global sound controls shared by every row. Per-row `silenced` flags feed the
+/// one shared loop; a snooze mutes that loop until a recorded wall-clock time.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SoundState {
+  /// When the snooze ends (RFC 3339 on the wire); `None` when not snoozed.
+  pub snoozed_until: Option<DateTime<Utc>>,
+  /// Whether any row still wants sound (it may currently be snoozed).
+  pub alerting: bool,
+}
+
+/// Longest accepted snooze. Also bounds how far a backwards wall-clock jump can
+/// extend an existing snooze.
+pub const MAX_SNOOZE: TimeDelta = TimeDelta::hours(24);
 
 /// Optional descriptive context, independent of the notification's immediate message.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -214,5 +230,26 @@ mod tests {
       let origin: Origin = serde_json::from_str(json).unwrap();
       assert!(origin.validate().is_err(), "{json}");
     }
+  }
+
+  #[test]
+  fn sound_state_uses_rfc3339_timestamps_and_tolerates_older_servers() {
+    let until = DateTime::parse_from_rfc3339("2026-09-27T15:04:05Z")
+      .unwrap()
+      .with_timezone(&Utc);
+    let state = SoundState {
+      snoozed_until: Some(until),
+      alerting: true,
+    };
+    let json = serde_json::to_string(&state).unwrap();
+    assert_eq!(
+      json,
+      r#"{"snoozed_until":"2026-09-27T15:04:05Z","alerting":true}"#
+    );
+    assert_eq!(serde_json::from_str::<SoundState>(&json).unwrap(), state);
+    assert_eq!(
+      serde_json::from_str::<SoundState>("{}").unwrap(),
+      SoundState::default()
+    );
   }
 }

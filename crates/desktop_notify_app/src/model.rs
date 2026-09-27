@@ -1,10 +1,12 @@
 use serde::Serialize;
 
-pub use notify_types::Notification;
+pub use notify_types::{Notification, SoundState};
 
 #[derive(Clone, Default, Serialize, PartialEq, Eq)]
 pub struct Snapshot {
   pub notifications: Vec<Notification>,
+  /// Global sound controls; defaults when an older service lacks `/sound`.
+  pub sound: SoundState,
   pub connected: bool,
   pub error: Option<String>,
 }

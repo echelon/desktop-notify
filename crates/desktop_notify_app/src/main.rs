@@ -9,7 +9,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use model::{visibility_change, Notification, Snapshot, VisibilityChange};
+use model::{visibility_change, Notification, Snapshot, SoundState, VisibilityChange};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -93,9 +93,52 @@ async fn dismiss_notification(id: String, state: State<'_, AppState>) -> Result<
   update_notification(&id, "dismiss", &state).await
 }
 
+/// Stop sound is global: it silences every row the service currently holds.
 #[tauri::command]
-async fn silence_notification(id: String, state: State<'_, AppState>) -> Result<(), String> {
-  update_notification(&id, "silence", &state).await
+async fn silence_all_sound(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+  let request = state
+    .client
+    .post(format!("{}/sound/silence", state.service));
+  update_sound(&app, &state, request).await
+}
+
+/// The service records `now + seconds` as a wall-clock deadline and resumes
+/// the shared loop once a later poll observes that the deadline has passed.
+#[tauri::command]
+async fn snooze_sound(
+  seconds: i64,
+  app: AppHandle,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let request = state
+    .client
+    .post(format!("{}/sound/snooze", state.service))
+    .json(&serde_json::json!({ "seconds": seconds }));
+  update_sound(&app, &state, request).await
+}
+
+async fn update_sound(
+  app: &AppHandle,
+  state: &AppState,
+  request: reqwest::RequestBuilder,
+) -> Result<(), String> {
+  let sound: SoundState = request
+    .send()
+    .await
+    .map_err(|_| "Cannot reach the notification service. Please try again.".to_string())?
+    .error_for_status()
+    .map_err(|e| e.to_string())?
+    .json()
+    .await
+    .map_err(|e| e.to_string())?;
+  // Show the new sound state immediately; row silenced flags follow on the next poll.
+  let snapshot = {
+    let mut snapshot = state.snapshot.lock().unwrap_or_else(|e| e.into_inner());
+    snapshot.sound = sound;
+    snapshot.clone()
+  };
+  let _ = app.emit(EVENT, &snapshot);
+  Ok(())
 }
 
 async fn update_notification(id: &str, action: &str, state: &AppState) -> Result<(), String> {
@@ -113,6 +156,15 @@ async fn update_notification(id: &str, action: &str, state: &AppState) -> Result
     .map_err(|e| e.to_string())?;
   // The poller reconciles state and hides only if there is no newer alert.
   Ok(())
+}
+
+/// Older services have no `/sound`; treat that as unsnoozed rather than offline.
+async fn read_sound(client: &reqwest::Client, service: &str) -> SoundState {
+  let response = client.get(format!("{service}/sound")).send().await;
+  match response.and_then(|r| r.error_for_status()) {
+    Ok(response) => response.json().await.unwrap_or_default(),
+    Err(_) => SoundState::default(),
+  }
 }
 
 async fn read_notifications(
@@ -133,17 +185,25 @@ fn start_polling(app: AppHandle) {
     let mut tick = 0u32;
     loop {
       let state = app.state::<AppState>();
+      // `/notifications` is read first: the service resumes an elapsed snooze
+      // on that poll, so the following `/sound` read already reflects it.
       let result = read_notifications(&state.client, &state.service).await;
+      let sound = match result {
+        Ok(_) => Some(read_sound(&state.client, &state.service).await),
+        Err(_) => None,
+      };
       let (snapshot, change, changed) = {
         let mut previous = state.snapshot.lock().unwrap_or_else(|e| e.into_inner());
         let next = match result {
           Ok(notifications) => Snapshot {
             notifications,
+            sound: sound.unwrap_or_default(),
             connected: true,
             error: None,
           },
           Err(_) => Snapshot {
             notifications: previous.notifications.clone(),
+            sound: previous.sound.clone(),
             connected: false,
             error: Some("Waiting for the notification service…".into()),
           },
@@ -284,7 +344,8 @@ fn main() {
       hide_window,
       focus_notification,
       dismiss_notification,
-      silence_notification
+      silence_all_sound,
+      snooze_sound
     ])
     .setup(|app| {
       #[cfg(target_os = "macos")]

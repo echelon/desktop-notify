@@ -5,6 +5,8 @@ use crate::{
   server_state::ServerState,
 };
 use actix_web::{http::StatusCode, test, web, App};
+use chrono::{TimeDelta, Utc};
+use notify_types::{Notification, SoundState};
 use std::sync::{Arc, Mutex};
 
 fn state() -> (
@@ -30,6 +32,10 @@ fn routes(cfg: &mut web::ServiceConfig) {
     .route("/notification", web::get().to(current_notification))
     .route("/notifications", web::get().to(list_notifications))
     .route("/silence/{id}", web::post().to(silence))
+    .route("/sound", web::get().to(sound))
+    .route("/sound/silence", web::post().to(silence_all))
+    .route("/sound/snooze", web::post().to(snooze))
+    .route("/sound/resume", web::post().to(resume_sound))
     .route("/stop", web::post().to(stop_handler));
 }
 
@@ -509,4 +515,147 @@ async fn invalid_context_cannot_replace_an_active_entry_or_its_sound() {
   }
   assert_eq!(state.notifications.lock().unwrap().active, vec![original]);
   assert!(commands.try_recv().is_err());
+}
+
+fn alert_request(endpoint: &str, session: &str) -> test::TestRequest {
+  test::TestRequest::post()
+    .uri(&format!("/{endpoint}"))
+    .insert_header(("Content-Type", "application/json"))
+    .set_payload(format!(
+      r#"{{"session_id":"{session}","title":"Task","message":"Update"}}"#
+    ))
+}
+
+fn snooze_request(seconds: i64) -> test::TestRequest {
+  test::TestRequest::post()
+    .uri("/sound/snooze")
+    .insert_header(("Content-Type", "application/json"))
+    .set_payload(format!(r#"{{"seconds":{seconds}}}"#))
+}
+
+#[actix_web::test]
+async fn global_stop_sound_silences_every_row_until_a_fresh_update() {
+  let (state, commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  test::call_service(&app, alert_request("awaiting_user_input", "a").to_request()).await;
+  test::call_service(&app, alert_request("all_tasks_finished", "b").to_request()).await;
+  while commands.try_recv().is_ok() {}
+
+  let silence = test::TestRequest::post().uri("/sound/silence").to_request();
+  let response: SoundState = test::call_and_read_body_json(&app, silence).await;
+  assert_eq!(response, SoundState::default());
+  assert!(matches!(
+    commands.try_recv().unwrap(),
+    AudioCommand::StopAll
+  ));
+  assert!(commands.try_recv().is_err());
+  {
+    let current = state.notifications.lock().unwrap();
+    assert_eq!(current.active.len(), 2);
+    assert!(current.active.iter().all(|n| n.silenced));
+  }
+
+  // A later update is a new alert and joins the shared loop again.
+  let update = alert_request("all_tasks_finished", "a").to_request();
+  let fresh: Notification = test::call_and_read_body_json(&app, update).await;
+  assert!(!fresh.silenced);
+  assert!(matches!(
+    commands.try_recv().unwrap(),
+    AudioCommand::PlayLoop(spec) if spec.name == "done"
+  ));
+  let sound = test::TestRequest::get().uri("/sound").to_request();
+  let sound: SoundState = test::call_and_read_body_json(&app, sound).await;
+  assert!(sound.alerting);
+}
+
+#[actix_web::test]
+async fn snooze_mutes_new_alerts_and_resumes_after_its_wall_clock_deadline() {
+  let (state, commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  test::call_service(&app, alert_request("awaiting_user_input", "a").to_request()).await;
+  commands.try_recv().unwrap();
+
+  let too_long = notify_types::MAX_SNOOZE.num_seconds() + 1;
+  for seconds in [0, -5, too_long] {
+    let invalid = test::call_service(&app, snooze_request(seconds).to_request()).await;
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+  }
+  assert!(commands.try_recv().is_err());
+
+  let requested_at = Utc::now();
+  let snoozed: SoundState =
+    test::call_and_read_body_json(&app, snooze_request(300).to_request()).await;
+  let until = snoozed.snoozed_until.unwrap();
+  let expected = requested_at + TimeDelta::minutes(5);
+  assert!(until >= expected && until - expected < TimeDelta::seconds(10));
+  assert!(snoozed.alerting);
+  assert!(matches!(
+    commands.try_recv().unwrap(),
+    AudioCommand::StopAll
+  ));
+
+  // Alerts during the snooze are recorded, unsilenced, and stay quiet; polling
+  // before the deadline leaves the loop stopped.
+  let update = alert_request("awaiting_user_input", "b").to_request();
+  let question: Notification = test::call_and_read_body_json(&app, update).await;
+  assert!(!question.silenced);
+  let poll = test::TestRequest::get().uri("/notifications").to_request();
+  assert_eq!(
+    test::call_service(&app, poll).await.status(),
+    StatusCode::OK
+  );
+  assert!(commands.try_recv().is_err());
+
+  // Move the recorded deadline into the past; the next poll notices it.
+  state.notifications.lock().unwrap().snoozed_until = Some(Utc::now() - TimeDelta::seconds(1));
+  let poll = test::TestRequest::get().uri("/notifications").to_request();
+  assert_eq!(
+    test::call_service(&app, poll).await.status(),
+    StatusCode::OK
+  );
+  assert!(matches!(
+    commands.try_recv().unwrap(),
+    AudioCommand::PlayLoop(spec) if spec.name == "await"
+  ));
+  {
+    let current = state.notifications.lock().unwrap();
+    assert_eq!(current.snoozed_until, None);
+    assert_eq!(current.audio_id.as_deref(), Some(question.id.as_str()));
+  }
+  let poll = test::TestRequest::get().uri("/notifications").to_request();
+  test::call_service(&app, poll).await;
+  assert!(commands.try_recv().is_err());
+}
+
+#[actix_web::test]
+async fn resume_stop_and_clock_jumps_end_a_snooze() {
+  let (state, commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  test::call_service(&app, alert_request("all_tasks_finished", "a").to_request()).await;
+  test::call_service(&app, snooze_request(60).to_request()).await;
+  while commands.try_recv().is_ok() {}
+
+  let resume = test::TestRequest::post().uri("/sound/resume").to_request();
+  let resumed: SoundState = test::call_and_read_body_json(&app, resume).await;
+  assert_eq!(resumed.snoozed_until, None);
+  assert!(matches!(
+    commands.try_recv().unwrap(),
+    AudioCommand::PlayLoop(_)
+  ));
+
+  // A deadline beyond the maximum snooze means the wall clock went backwards.
+  test::call_service(&app, snooze_request(60).to_request()).await;
+  commands.try_recv().unwrap();
+  state.notifications.lock().unwrap().snoozed_until = Some(Utc::now() + TimeDelta::days(3));
+  let sound = test::TestRequest::get().uri("/sound").to_request();
+  let sound: SoundState = test::call_and_read_body_json(&app, sound).await;
+  assert_eq!(sound.snoozed_until, None);
+  assert!(matches!(
+    commands.try_recv().unwrap(),
+    AudioCommand::PlayLoop(_)
+  ));
+
+  test::call_service(&app, snooze_request(60).to_request()).await;
+  test::call_service(&app, test::TestRequest::post().uri("/stop").to_request()).await;
+  assert_eq!(state.notifications.lock().unwrap().snoozed_until, None);
 }

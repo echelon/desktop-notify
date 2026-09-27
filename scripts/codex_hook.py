@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Codex command hook: consume stdin JSON, ensure server, POST an alert.
+"""Codex/Claude Code command hook: consume stdin JSON, ensure server, POST an alert.
 
 No shell interpolation of conversation data. No third-party Python dependencies.
 """
@@ -101,6 +101,30 @@ def clip(text, limit):
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
+def last_transcript_text(path, limit=1024 * 1024):
+    """Claude Code fallback when Stop omits last_assistant_message: the newest
+    assistant text in its JSONL transcript. Unreadable/unknown shapes yield None."""
+    try:
+        with open(path, "rb") as transcript:
+            transcript.seek(0, os.SEEK_END)
+            transcript.seek(max(0, transcript.tell() - limit))
+            lines = transcript.read().decode("utf-8", "replace").splitlines()
+    except (OSError, TypeError, ValueError):
+        return None
+    for line in reversed(lines):
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        message = record.get("message") if isinstance(record, dict) and record.get("type") == "assistant" else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list):
+            text = "\n\n".join(c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text")
+            if text.strip():
+                return text
+    return None
+
+
 def notification_for(event):
     name = event.get("hook_event_name")
     tool = event.get("tool_name", "")
@@ -112,7 +136,8 @@ def notification_for(event):
             args = {}
     cwd = Path(event.get("cwd") or "work").name
     if name == "Stop":
-        message = event.get("last_assistant_message") or "The agent finished its turn."
+        message = (event.get("last_assistant_message") or last_transcript_text(event.get("transcript_path"))
+                   or "The agent finished its turn.")
         # Stop can be a plain-text question when the structured input tool is
         # unavailable. Keep those turns on the awaiting sound, not the done sound.
         awaiting = plain(message).endswith("?") or re.search(

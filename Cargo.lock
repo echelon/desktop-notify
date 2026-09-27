@@ -197,6 +197,7 @@ version = "0.0.1"
 dependencies = [
  "actix-web",
  "anyhow",
+ "chrono",
  "env_logger",
  "log",
  "notify-types",
@@ -2609,6 +2610,7 @@ dependencies = [
 name = "notify-types"
 version = "0.0.1"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
 ]

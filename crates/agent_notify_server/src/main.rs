@@ -76,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
         Logger::default()
           .exclude("/notification")
           .exclude("/notifications")
+          .exclude("/sound")
           .exclude("/desktop/status"),
       )
       .route("/", web::get().to(root_handler))
@@ -94,6 +95,10 @@ async fn main() -> anyhow::Result<()> {
       .route("/notifications", web::get().to(list_notifications))
       .route("/dismiss/{id}", web::post().to(dismiss))
       .route("/silence/{id}", web::post().to(silence))
+      .route("/sound", web::get().to(sound))
+      .route("/sound/silence", web::post().to(silence_all))
+      .route("/sound/snooze", web::post().to(snooze))
+      .route("/sound/resume", web::post().to(resume_sound))
       .route("/desktop/status", web::post().to(desktop_status))
       .route("/stop", web::post().to(stop_handler))
   })

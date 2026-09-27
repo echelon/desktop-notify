@@ -1,7 +1,7 @@
 # desktop-notify
 
 A local REST API for getting an agent user's attention, with looping sounds,
-a Rust/Tauri tray app, and global Codex CLI hooks.
+a Rust/Tauri tray app, and global Codex CLI and Claude Code hooks.
 
 This Rust workspace starts with
 [`agent-notify-server`](crates/agent_notify_server/README.md), copied from ArtCraft.
@@ -48,15 +48,24 @@ restarts; clearing a row does not block future updates from that session.
 - `POST /dismiss/{id}` clears only that entry. Both actions return `{stopped: bool}`;
   stale IDs are harmless, even if the same session has posted a newer update.
 - `GET /notification` still returns the most recent row for older clients.
+- `GET /sound` returns `{snoozed_until, alerting}`; `snoozed_until` is an RFC 3339
+  UTC timestamp or `null`.
+- `POST /sound/silence` stops sound globally: every current row is silenced and
+  any snooze is cancelled. Rows stay listed; later updates sound again.
+- `POST /sound/snooze` with `{"seconds": 60}` (1 to 86,400) mutes all sound until
+  that wall-clock time. Alerts arriving meanwhile stay quiet, then the shared loop
+  resumes. Snoozing again replaces the deadline; `POST /sound/resume` ends it early.
 - `GET /state` includes `notifications`, the legacy `notification` field,
-  `audio_notification_id`, and desktop/audio status.
-- `POST /stop` (or legacy `GET /stop`) clears **all** entries and stops all audio.
+  `audio_notification_id`, `sound`, and desktop/audio status.
+- `POST /stop` (or legacy `GET /stop`) clears **all** entries, any snooze, and all audio.
 
 One shared sound loop plays while any unsilenced entry remains. Pending questions
 use `alert_await_user_input_sound` and take priority over completions, which use
 `alert_done_sound`. Within each kind, the newest update wins. Clearing or silencing
 the audible entry resumes another outstanding alert; silencing another entry does
-not interrupt playback. Legacy sound-only loop endpoints remain available and
+not interrupt playback. A snooze records only its end time; the service compares it
+with the current time whenever state is read or changed (the tray app polls every
+400 ms), so no timer runs and sound resumes on the first poll after it elapses. Legacy sound-only loop endpoints remain available and
 clear the status list when explicitly invoked.
 
 ## Optional session context
@@ -128,6 +137,21 @@ not replace the existing top-level `notify` integration. Start a new Codex sessi
 after installing so it loads the new hooks. The implementation is
 [`scripts/codex_hook.py`](scripts/codex_hook.py); keep this checkout in place.
 
+### Claude Code
+
+```sh
+python3 scripts/install_hooks.py --claude            # Preview
+python3 scripts/install_hooks.py --claude --install  # Install with a backup
+```
+
+This adds the same Stop, PermissionRequest, and PreToolUse (`AskUserQuestion`)
+hooks to **`~/.claude/settings.json`** (or `$CLAUDE_CONFIG_DIR`), preserving
+unrelated settings. It removes older `~/.claude/agent_notify*.sh` hooks: those
+called the sound-only `/loop_*` and `/stop` endpoints, which create no status row
+and clear every agent's row. Start a new Claude Code session afterwards. Stop rows
+use Claude's final message (falling back to its transcript) and its latest prompt
+as the current task.
+
 | Codex event | API |
 | --- | --- |
 | `Stop` | `POST /all_tasks_finished`, with the final response as the outcome |
@@ -161,13 +185,15 @@ frontend is plain HTML/CSS/JavaScript bundled by Tauri; no Node build step is ne
 
 - New alerts open the window above other apps, on every Space, including full-screen apps.
 - Each row shows **Input needed** or **Finished**, a short session ID, and its own
-  **Focus**, **Stop sound**, and **×** buttons. Available project/task context is
-  compact; expand **Details** (or **View message**) for the full text.
-- **Stop sound** calls `POST /silence/{id}` and retains the status for reference.
+  **Focus** and **×** buttons, plus **Muted** once its sound is stopped. Available
+  project/task context is compact; expand **Details** (or **View message**) for the full text.
+- Sound is global. The bar above the status line has **Stop sound** (`POST
+  /sound/silence`, retaining every row), **Snooze 1 min**, and **Snooze 5 min**
+  (`POST /sound/snooze`), with a countdown while snoozed.
 - **×** calls `POST /dismiss/{id}` and removes only that row. The window stays open
   while other entries remain; clearing the last entry hides it.
 - **Hide to tray**, Escape, closing, or minimizing hides the window without
-  dismissing the alert. Its sound keeps playing until explicitly dismissed.
+  dismissing the alert. Its sound keeps playing until stopped, snoozed, or cleared.
 - Clicking the bell tray icon recalls the status list. Right-click opens the
   Show Notifications / Hide to Tray / Quit menu. A dot marks an active alert.
 - When idle, the app stays in the tray. Recalling it shows **All caught up**.
@@ -175,7 +201,7 @@ frontend is plain HTML/CSS/JavaScript bundled by Tauri; no Node build step is ne
   hidden alert stays hidden until recalled or replaced with a new alert.
 
 The Tauri Rust client talks directly to the local service. It polls every 400 ms
-from `/notifications` and reports `/desktop/status` heartbeats. `/state` includes `desktop_connected`
+from `/notifications` and `/sound` and reports `/desktop/status` heartbeats. `/state` includes `desktop_connected`
 and `desktop` presentation/window visibility/process details, including `displayed_ids`. The tray app defaults
 to `http://127.0.0.1:43110`; the service passes its actual address with
 `--server-url` when launching the app. Keep one service/app pair running.

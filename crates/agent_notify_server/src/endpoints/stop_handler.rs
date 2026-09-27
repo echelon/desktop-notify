@@ -9,6 +9,7 @@ pub async fn stop_handler(state: web::Data<ServerState>) -> impl Responder {
     .unwrap_or_else(|e| e.into_inner());
   current.active.clear();
   current.audio_id = None;
+  current.snoozed_until = None;
   state.audio.stop_all();
   HttpResponse::Ok().body("ok\n")
 }

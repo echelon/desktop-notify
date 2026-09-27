@@ -4,7 +4,8 @@
 
 Desktop Notify is a local agent attention service: a Rust REST API owns looping
 audio and per-session notifications, a Tauri tray app displays them, and Python
-hooks forward Codex questions, permission requests, and completed turns. The
+hooks forward Codex and Claude Code questions, permission requests, and completed
+turns. The
 desktop experience is primarily macOS. The service defaults to
 `http://127.0.0.1:43110` and is intended for trusted local callers.
 
@@ -44,8 +45,11 @@ README and `crates/agent_notify_server/static/index.html` describe the API.
   A session ID identifies a row; a fresh notification ID identifies each update.
   Stale row actions must never affect a replacement or another session.
 - Focus, Stop sound, Clear, and Hide have separate meanings. Focus leaves the row
-  and sound intact; Stop sound retains the row; Clear removes that row; Hide only
-  changes window visibility. `/stop` intentionally clears everything.
+  and sound intact; Stop sound is global and silences every row but retains them;
+  Clear removes that row; Hide only changes window visibility. `/stop`
+  intentionally clears everything.
+- Snooze mutes all sound until a recorded wall-clock deadline (chrono
+  `DateTime<Utc>`), checked against the current time on requests; never a timer.
 - Pending questions have sound priority over completions. Preserve one shared
   audio loop and do not restart it for unrelated row changes.
 - The persistent, always-on-top Tauri tray window replaced the Swift/Notification
@@ -55,6 +59,27 @@ README and `crates/agent_notify_server/static/index.html` describe the API.
   process arguments separately. Never interpolate them into executable code.
 - Preserve legacy endpoints and optional-field compatibility when extending the
   API. Update producers, shared types, consumers, tests, and API docs together.
+
+## Connecting an agent to the server
+
+Agents talk to the server only through `scripts/codex_hook.py`, which posts rows to
+`POST /awaiting_user_input` and `POST /all_tasks_finished` with the event's
+`session_id`, collected `context`, and `origin`. Install it with the installer,
+not by hand, and start a new agent session afterwards:
+
+```sh
+python3 scripts/install_hooks.py --install           # Codex: ~/.codex/hooks.json + trust
+python3 scripts/install_hooks.py --claude --install  # Claude Code: ~/.claude/settings.json
+```
+
+Omit `--install` to preview. Both register the same three hooks: Stop,
+PermissionRequest, and PreToolUse matching `request_user_input(_async)` or
+`AskUserQuestion`, each synchronous with a 720 s timeout for cold build/start.
+Never wire an agent to the legacy sound-only endpoints (`/loop_*`, `/alert_*`) or
+call `/stop` from a hook: they create no row and `/stop`/`/loop_*` clear **every**
+session's row. The Claude installer removes old `~/.claude/agent_notify*.sh` hooks
+that did this. To check an install, pipe a Stop event into the installed command
+and confirm a row appears in `GET /notifications`.
 
 ## Build and verification
 

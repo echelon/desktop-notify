@@ -4,19 +4,18 @@ use actix_web::{web, HttpResponse, Responder};
 use serde_derive::Serialize;
 
 use crate::audio_player::EngineStatus;
+use crate::endpoints::notification_handlers::{lock_and_resume, sound_state};
 use crate::server_state::ServerState;
 
 pub async fn state_handler(state: web::Data<ServerState>) -> impl Responder {
-  let current = state
-    .notifications
-    .lock()
-    .unwrap_or_else(|e| e.into_inner());
+  let current = lock_and_resume(&state);
   let resp = StateResponse {
     audio: state.audio.status(),
     config: ConfigSummary::from_state(&state),
     notification: current.active.first().cloned(),
     notifications: current.active.clone(),
     audio_notification_id: current.audio_id.clone(),
+    sound: sound_state(&current),
     desktop: current.desktop.clone(),
     desktop_connected: current.desktop_connected(),
   };
@@ -28,6 +27,7 @@ struct StateResponse {
   notification: Option<crate::notifications::Notification>,
   notifications: Vec<crate::notifications::Notification>,
   audio_notification_id: Option<String>,
+  sound: notify_types::SoundState,
   desktop: crate::notifications::DesktopStatus,
   desktop_connected: bool,
   audio: EngineStatus,

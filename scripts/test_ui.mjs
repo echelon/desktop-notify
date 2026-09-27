@@ -16,17 +16,18 @@ class Element {
   find(className) { if (this.className.split(' ').includes(className)) return this; return this.children.map((child) => child.find(className)).find(Boolean); }
 }
 
-async function ui(alerts, invoke = async () => ({ target: 'application' })) {
+async function ui(alerts, invoke = async () => ({ target: 'application' }), sound = { alerting: true }) {
   const elements = new Map();
   const calls = [];
   let update;
   const element = (id) => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
   const context = {
+    Date, setInterval() {},
     document: { createElement: (tag) => new Element(tag), getElementById: element, addEventListener() {} },
     window: { __TAURI__: {
       core: { async invoke(command, args) {
         calls.push([command, args]);
-        if (command === 'get_snapshot') return { notifications: alerts, connected: true, error: null };
+        if (command === 'get_snapshot') return { notifications: alerts, sound, connected: true, error: null };
         return invoke(command, args);
       } },
       event: { async listen(_event, handler) { update = handler; } },
@@ -38,7 +39,7 @@ async function ui(alerts, invoke = async () => ({ target: 'application' })) {
   return {
     element, calls,
     row: (id) => element('notifications').children.find((row) => row.dataset.id === id),
-    update: (notifications, connected = true) => update({ payload: { notifications, connected, error: null } }),
+    update: (notifications, connected = true, nextSound = sound) => update({ payload: { notifications, sound: nextSound, connected, error: null } }),
   };
 }
 
@@ -53,17 +54,20 @@ test('independent sessions show their own status and focus metadata', async () =
   assert.notEqual(page.row('a').find('session').textContent, page.row('b').find('session').textContent);
 });
 
-test('Focus leaves all rows available for independent sound stopping and clearing', async () => {
+test('Focus leaves all rows available for global sound stopping and clearing', async () => {
   const page = await ui([notification(), notification('b')]);
   await page.row('b').find('focus').handlers.click();
   assert.equal(page.calls.find(([name]) => name === 'focus_notification')[1].id, 'b');
   assert.ok(!page.calls.some(([name]) => name === 'hide_window' || name === 'dismiss_notification'));
-  assert.equal(page.row('b').find('silence').disabled, false);
-  await page.row('b').find('silence').handlers.click();
-  assert.equal(page.calls.find(([name]) => name === 'silence_notification')[1].id, 'b');
-  page.update([notification(), notification('b', { silenced: true })]);
-  assert.equal(page.row('b').find('silence').disabled, true);
-  assert.equal(page.row('a').find('silence').disabled, false);
+  assert.equal(page.row('b').find('silence'), undefined);
+  assert.equal(page.element('sound-controls').hidden, false);
+  assert.equal(page.element('silence-all').disabled, false);
+  await page.element('silence-all').handlers.click();
+  assert.deepEqual(page.calls.at(-1), ['silence_all_sound', undefined]);
+  page.update([notification('a', { silenced: true }), notification('b', { silenced: true })], true, { alerting: false });
+  assert.equal(page.row('a').find('row-sound').hidden, false);
+  assert.equal(page.element('silence-all').disabled, true);
+  assert.equal(page.element('sound-status').textContent, 'All sounds stopped');
   await page.row('b').find('clear').handlers.click();
   assert.equal(page.calls.find(([name]) => name === 'dismiss_notification')[1].id, 'b');
   page.update([notification()]);
@@ -112,7 +116,8 @@ test('clear failures stay on their row and offline updates preserve both rows', 
   assert.equal(page.row('a').find('focus-status').hidden, true);
   page.update([notification(), notification('b')], false);
   assert.equal(page.row('a').find('clear').disabled, true);
-  assert.equal(page.row('b').find('silence').disabled, true);
+  assert.equal(page.element('silence-all').disabled, true);
+  assert.equal(page.element('snooze-5').disabled, true);
   assert.equal(page.row('a').find('focus').disabled, false);
   page.update([]);
   assert.equal(page.element('empty').hidden, false);
@@ -156,4 +161,35 @@ test('context changes and literal markup update safely without collapsing detail
   assert.equal(row.find('project').textContent, literal);
   assert.equal(row.find('context-current_ask').find('context-value').textContent, literal);
   assert.equal(row.find('context-work_arc').hidden, true);
+});
+
+test('snooze buttons request fixed durations and show a countdown to the recorded deadline', async () => {
+  const page = await ui([notification()]);
+  assert.equal(page.element('sound-status').textContent, 'Sound on');
+  await page.element('snooze-1').handlers.click();
+  assert.equal(JSON.stringify(page.calls.at(-1)), '["snooze_sound",{"seconds":60}]');
+  await page.element('snooze-5').handlers.click();
+  assert.equal(JSON.stringify(page.calls.at(-1)), '["snooze_sound",{"seconds":300}]');
+  const until = new Date(Date.now() + 272_500).toISOString();
+  page.update([notification()], true, { alerting: true, snoozed_until: until });
+  assert.equal(page.element('sound-status').textContent, 'Snoozed · resumes in 4:33');
+  assert.equal(page.element('silence-all').disabled, false);
+  // An elapsed deadline no longer reads as snoozed while the service catches up.
+  page.update([notification()], true, { alerting: true, snoozed_until: new Date(Date.now() - 1000).toISOString() });
+  assert.equal(page.element('sound-status').textContent, 'Sound on');
+  // A snooze stays visible even after every row has been cleared.
+  page.update([], true, { alerting: false, snoozed_until: until });
+  assert.equal(page.element('sound-controls').hidden, false);
+  page.update([], true, { alerting: false });
+  assert.equal(page.element('sound-controls').hidden, true);
+});
+
+test('sound failures surface in the sound bar without touching rows', async () => {
+  const page = await ui([notification()], async (command) => {
+    if (command === 'snooze_sound') throw new Error('Service offline');
+  });
+  await page.element('snooze-1').handlers.click();
+  assert.match(page.element('sound-status').textContent, /Service offline/);
+  assert.equal(page.row('a').find('focus-status').hidden, true);
+  assert.equal(page.element('snooze-1').disabled, false);
 });

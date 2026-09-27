@@ -28,8 +28,12 @@ The server listens on `127.0.0.1:43110` by default. Override with
 | GET    | `/notifications` | All session rows, newest update first. |
 | GET    | `/notification` | Latest row (legacy compatibility). |
 | POST   | `/silence/{id}` | Stop sound for this entry, keeping its status and focus target. |
+| GET    | `/sound` | `{snoozed_until, alerting}`; `snoozed_until` is RFC 3339 UTC or `null`. |
+| POST   | `/sound/silence` | Global Stop sound: silence every current row and cancel any snooze. |
+| POST   | `/sound/snooze` | JSON `{seconds}` (1–86400); mute all sound until that wall-clock time. |
+| POST   | `/sound/resume` | End a snooze early. |
 | POST   | `/dismiss/{id}` | Clear this entry only; stale alert IDs cannot clear newer updates. |
-| POST   | `/stop` | Stop all audio and clear every session entry. |
+| POST   | `/stop` | Stop all audio, clear every session entry, and cancel any snooze. |
 | GET    | `/health` | Service identity, API version, and process ID for hook startup. |
 | GET    | `/alert_beep`  | Play `alert_beep_sound` once (mixes over any active loop).                                   |
 | GET    | `/alert_done`  | Play `alert_done_sound` once.                                                                |
@@ -43,7 +47,10 @@ The server listens on `127.0.0.1:43110` by default. Override with
 Notification updates replace only the matching `session_id`. Omitted IDs use one
 legacy row. The shared sound loop prioritizes unsilenced questions, then the
 latest completion. Clearing or silencing a row leaves other sessions intact and
-plays the next outstanding alert if necessary. `/state` exposes `notifications`
+plays the next outstanding alert if necessary. A snooze stores its deadline and
+mutes the loop without silencing rows; any later request that reads or changes
+notification state (including `/notifications` polls) resumes sound once it has
+passed. `/state` exposes `notifications`, `sound`,
 and `audio_notification_id` alongside its legacy fields. Session IDs are nonblank,
 at most 256 bytes, and cannot contain control characters. Rows are held in memory. Optional `context` fields are `cwd`, `work_arc`,
 `current_ask`, `repo_name`, and `repo_description`. Partial updates retain existing

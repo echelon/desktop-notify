@@ -63,6 +63,8 @@ fn play_loop_or_404(
     .unwrap_or_else(|e| e.into_inner());
   current.active.clear();
   current.audio_id = None;
+  // An explicit legacy loop is not subject to a snooze meant for status rows.
+  current.snoozed_until = None;
   state.audio.play_loop(spec);
   HttpResponse::Ok().body("ok\n")
 }

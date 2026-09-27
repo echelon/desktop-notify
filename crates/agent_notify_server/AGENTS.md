@@ -31,10 +31,16 @@ Inherit the root rules, including **two-space Rust indentation**.
   and return `stopped: false`; never resolve them to the session's replacement.
 - Audio selection is the newest unsilenced question, otherwise the newest
   unsilenced completion. If `audio_id` is unchanged, leave playback alone.
+- Sound controls are global. `/sound/silence` silences every current row; a
+  snooze stores a chrono `DateTime<Utc>` deadline and mutes the loop without
+  silencing rows. Never use a timer or sleep for snooze expiry: compare the
+  deadline with `Utc::now()` when state is locked (`lock_and_resume`). Deadlines
+  beyond `MAX_SNOOZE` mean the clock moved backwards and count as elapsed.
 - `/notifications` includes silenced rows; `/notification` returns the newest row
   for older clients. Preserve legacy `/state` fields alongside the list and
-  `audio_notification_id`. Read endpoints must not alter playback.
-- `/stop` clears every row and all audio. Legacy sound-only loop endpoints clear
+  `audio_notification_id`. Read endpoints must not alter playback, except that
+  resuming an elapsed snooze on any read is how expiry is observed.
+- `/stop` clears every row, any snooze, and all audio. Legacy sound-only loop endpoints clear
   the row list and replace the loop; one-shots mix over the loop.
 - Keep `/health` service identity/version compatible with `scripts/codex_hook.py`.
   Coordinate any API version change with its health check.

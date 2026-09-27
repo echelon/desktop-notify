@@ -44,6 +44,27 @@ class HookTests(unittest.TestCase):
                     hook.main()
                     self.assertEqual(post.call_args.args[1]["session_id"], session_id)
 
+    def test_claude_stop_falls_back_to_the_last_assistant_text_in_its_transcript(self):
+        import tempfile
+        records = [
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "Earlier reply"}]}},
+            {"type": "user", "message": {"content": "next"}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "Added **global** sound."}]}},
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash"}]}},
+        ]
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl") as transcript:
+            transcript.write("not json\n" + "\n".join(json.dumps(r) for r in records) + "\n")
+            transcript.flush()
+            event = {"hook_event_name": "Stop", "session_id": "claude-a", "transcript_path": transcript.name}
+            endpoint, payload = hook.notification_for(event)
+            self.assertEqual(endpoint, "/all_tasks_finished")
+            self.assertEqual(payload["message"], "Added global sound.")
+            # An explicit final message still wins over the transcript.
+            _, payload = hook.notification_for({**event, "last_assistant_message": "Explicit."})
+            self.assertEqual(payload["message"], "Explicit.")
+        missing = {"hook_event_name": "Stop", "transcript_path": "/nonexistent/transcript.jsonl"}
+        self.assertEqual(hook.notification_for(missing)[1]["message"], "The agent finished its turn.")
+
     def test_session_fallback_and_legacy_payload(self):
         event = {"hook_event_name": "Stop"}
         self.assertNotIn("session_id", hook.notification_for(event)[1])

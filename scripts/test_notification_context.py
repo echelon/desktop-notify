@@ -68,6 +68,18 @@ class ContextTests(unittest.TestCase):
             stream.write(json.dumps(self.message('user', 'Switch to the server API.')) + '\n')
         self.assertEqual(context.transcript_context(path), {'current_ask': 'Switch to the server API.'})
 
+    def test_claude_code_transcript_uses_the_latest_typed_prompt(self):
+        path = self.transcript(
+            {'type': 'user', 'message': {'role': 'user', 'content': 'Add a snooze button.'}},
+            {'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'On it.'}]}},
+            {'type': 'user', 'message': {'content': [{'type': 'tool_result', 'content': 'ok'}]}},
+            {'type': 'user', 'message': {'content': [{'type': 'text', 'text': 'Rebuild the app.<system-reminder>x</system-reminder>'}]}},
+            {'type': 'user', 'isMeta': True, 'message': {'content': 'Skill instructions'}},
+            {'type': 'user', 'message': {'content': '<command-name>/model</command-name>'}},
+            {'type': 'user', 'message': {'content': '<local-command-stdout>Set model</local-command-stdout>'}},
+        )
+        self.assertEqual(context.transcript_context(path), {'current_ask': 'Rebuild the app.'})
+
     def test_explicit_goal_can_update_the_arc(self):
         path = self.transcript(self.message('user', 'Fix login.'),
             {'type': 'response_item', 'payload': {'type': 'function_call', 'name': 'functions.update_plan', 'arguments': json.dumps({'explanation': 'Repair the login flow.'})}},

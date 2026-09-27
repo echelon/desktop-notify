@@ -41,6 +41,14 @@ Resolve repository paths from `__file__`, since hooks run from other directories
 
 ## Global configuration and verification
 
+- `codex_hook.py` also serves Claude Code, whose Stop/PermissionRequest/
+  PreToolUse payloads share these field names. When Stop lacks
+  `last_assistant_message`, use the newest assistant text in the Claude JSONL
+  transcript. `notification_context.py` reads both transcript formats; Claude
+  `isMeta`, tool-result, and slash-command records are not user requests.
+- `install_hooks.py --claude` writes the same hooks to Claude Code's
+  `settings.json` (honor `CLAUDE_CONFIG_DIR`); it has no trust step. It must
+  remove legacy `agent_notify*.sh` hooks, which clear every row via `/stop`.
 - `install_hooks.py` previews by default. Preserve unrelated hooks/configuration,
   including the separate top-level notify integration, and create timestamped
   backups before installation. Use `codex_rpc.py` and the installed Codex config

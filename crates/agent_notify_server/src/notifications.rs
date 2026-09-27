@@ -1,6 +1,8 @@
 //! The active alert is shared by the REST API and the Tauri tray app.
 use std::time::Instant;
 
+use chrono::{DateTime, Utc};
+
 use serde::{Deserialize, Serialize};
 
 pub use notify_types::Notification;
@@ -21,6 +23,9 @@ pub struct NotificationState {
   /// Most recently updated first; one entry per session (None is the legacy slot).
   pub active: Vec<Notification>,
   pub audio_id: Option<String>,
+  /// Wall-clock deadline for a global snooze. It is compared with the current
+  /// time whenever state is touched rather than woken by a timer.
+  pub snoozed_until: Option<DateTime<Utc>>,
   pub desktop: DesktopStatus,
   pub desktop_seen: Option<Instant>,
 }

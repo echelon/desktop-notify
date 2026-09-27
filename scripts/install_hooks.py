@@ -3,6 +3,7 @@
 
 The explicit --install option registers trust only for these exact definitions,
 using hashes returned by the installed Codex version (never bypassing trust).
+--claude targets Claude Code's settings.json instead; it has no trust registry.
 """
 import argparse
 from datetime import datetime
@@ -22,6 +23,10 @@ CONFIG_PATH = CODEX_DIR / "config.toml"
 COMMAND = shlex.join([sys.executable, str(ROOT / "scripts/codex_hook.py")])
 OLD_COMMAND = "for i in 1 2 3; do afplay /Users/bt/dev/storyteller/artcraft/frontend/apps/artcraft/app/public/resources/sound/smrpg_flower.wav ; sleep 0.5; done &"
 MATCHER = r"(^|.*[._])(request_user_input(_async)?|AskUserQuestion)$"
+CLAUDE_SETTINGS = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "settings.json"
+# Earlier Claude Code wiring called legacy sound-only endpoints: /loop_* and /stop
+# clear every session's row, so they must not run alongside the row-based hook.
+LEGACY_CLAUDE_SCRIPTS = ("agent_notify.sh", "agent_notify_on_notification.sh")
 
 
 def configuration():
@@ -40,6 +45,46 @@ def configuration():
         groups.append(group)
         hooks[name] = groups
     return document
+
+
+def claude_configuration():
+    """Same events, command, and matcher as Codex, in Claude Code's settings.json."""
+    document = json.loads(CLAUDE_SETTINGS.read_text()) if CLAUDE_SETTINGS.exists() else {}
+    hooks = document.setdefault("hooks", {})
+    for name in list(hooks):
+        groups = []
+        for group in hooks[name]:
+            handlers = [h for h in group.get("hooks", [])
+                        # Any interpreter running this repo's hook counts as ours.
+                        if not h.get("command", "").endswith(str(ROOT / "scripts/codex_hook.py"))
+                        and not any(script in h.get("command", "") for script in LEGACY_CLAUDE_SCRIPTS)]
+            if handlers:
+                groups.append({**group, "hooks": handlers})
+        if groups:
+            hooks[name] = groups
+        else:
+            del hooks[name]
+    for name in ("Stop", "PermissionRequest", "PreToolUse"):
+        group = {"hooks": [{"type": "command", "command": COMMAND, "timeout": 720,
+                            "statusMessage": "Notifying through Desktop Notify"}]}
+        if name == "PreToolUse":
+            group["matcher"] = MATCHER
+        hooks.setdefault(name, []).append(group)
+    return document
+
+
+def install_claude():
+    document = claude_configuration()
+    if CLAUDE_SETTINGS.exists():
+        backup = CLAUDE_SETTINGS.with_name(CLAUDE_SETTINGS.name + ".desktop-notify-backup-"
+                                           + datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
+        shutil.copy2(CLAUDE_SETTINGS, backup)
+        print(f"Backup: {backup}")
+    CLAUDE_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    temporary = CLAUDE_SETTINGS.with_suffix(".json.desktop-notify-tmp")
+    temporary.write_text(json.dumps(document, indent=2) + "\n")
+    temporary.replace(CLAUDE_SETTINGS)
+    print(f"Claude Code hooks: {CLAUDE_SETTINGS}")
 
 
 def own_hooks(rpc):
@@ -92,8 +137,13 @@ if __name__ == "__main__":
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--install", action="store_true")
     mode.add_argument("--verify", action="store_true")
+    parser.add_argument("--claude", action="store_true", help="target Claude Code instead of Codex")
     args = parser.parse_args()
-    if args.install:
+    if args.claude:
+        if args.verify:
+            parser.error("--verify applies to Codex hook trust only")
+        install_claude() if args.install else print(json.dumps(claude_configuration(), indent=2))
+    elif args.install:
         install()
     elif args.verify:
         verify()

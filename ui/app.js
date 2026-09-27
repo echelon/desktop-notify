@@ -3,11 +3,13 @@ const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 const { getCurrentWindow } = window.__TAURI__.window;
 const byId = (id) => document.getElementById(id);
-let snapshot = { notifications: [], connected: false, error: null };
+let snapshot = { notifications: [], sound: {}, connected: false, error: null };
 const rows = new Map();
 const focusing = new Set();
 const pending = new Set();
 const statuses = new Map();
+let soundPending = false;
+let soundError = '';
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -25,7 +27,9 @@ function createRow(alert) {
   const kind = element('span', 'kind');
   const project = element('span', 'project');
   const session = element('span', 'session');
-  eyebrow.append(kind, project, session);
+  const sound = element('span', 'row-sound', 'Muted');
+  sound.title = 'Sound stopped for this entry; a new update will sound again';
+  eyebrow.append(kind, project, session, sound);
   const title = element('h2', 'task-title');
   const preview = element('p', 'context-preview');
   info.append(eyebrow, title, preview);
@@ -54,13 +58,8 @@ function createRow(alert) {
   details.append(summary, message, context);
   const status = element('p', 'focus-status');
   status.setAttribute('role', 'status');
-  const actions = element('div', 'row-actions');
-  const sound = element('span', 'sound-status');
-  const silence = element('button', 'secondary silence', 'Stop sound');
-  silence.addEventListener('click', () => updateNotification(alert.id, 'silence_notification'));
-  actions.append(sound, silence);
-  row.append(heading, details, status, actions);
-  return { row, kind, project, session, title, preview, summary, context, fields, focus, clear, message, status, sound, silence };
+  row.append(heading, details, status);
+  return { row, kind, project, session, title, preview, summary, context, fields, focus, clear, message, status, sound };
 }
 
 const optionalText = (value) => typeof value === 'string' ? value.trim() : '';
@@ -130,15 +129,51 @@ function render(next) {
     refs.focus.textContent = focusing.has(alert.id) ? 'Focusing…' : 'Focus';
     refs.focus.title = canFocus ? 'Focus the requesting terminal; keep this entry visible' : 'No terminal information was supplied';
     refs.clear.disabled = pending.has(alert.id) || !next.connected;
-    refs.silence.disabled = pending.has(alert.id) || !next.connected || alert.silenced;
-    refs.silence.textContent = alert.silenced ? 'Silenced' : 'Stop sound';
-    refs.sound.textContent = alert.silenced ? 'Sound stopped · status retained' : 'Sound on';
+    refs.sound.hidden = !alert.silenced;
     refs.status.hidden = !statuses.has(alert.id);
     refs.status.textContent = statuses.get(alert.id) || '';
     const list = byId('notifications');
     // Preserve open details, selection and keyboard focus on unchanged updates.
     if (list.children[index] !== refs.row) list.insertBefore(refs.row, list.children[index] || null);
   });
+  renderSound();
+}
+
+function formatRemaining(ms) {
+  const seconds = Math.ceil(ms / 1000);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = String(Math.floor(seconds / 60) % 60);
+  return `${hours ? `${hours}:${minutes.padStart(2, '0')}` : minutes}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+/* Sound is global: every unsilenced row feeds one shared loop. The service owns
+   the snooze deadline; this only compares it with the clock for the countdown. */
+function renderSound() {
+  const sound = snapshot.sound || {};
+  const remaining = sound.snoozed_until ? Date.parse(sound.snoozed_until) - Date.now() : 0;
+  const snoozed = remaining > 0;
+  byId('sound-controls').hidden = snapshot.notifications.length === 0 && !snoozed;
+  byId('sound-controls').classList.toggle('snoozed', snoozed);
+  const unavailable = soundPending || !snapshot.connected;
+  byId('silence-all').disabled = unavailable || (!sound.alerting && !snoozed);
+  byId('snooze-1').disabled = unavailable;
+  byId('snooze-5').disabled = unavailable;
+  let text = sound.alerting ? 'Sound on' : 'All sounds stopped';
+  if (snoozed) text = `Snoozed · resumes in ${formatRemaining(remaining)}`;
+  byId('sound-status').textContent = soundError || text;
+}
+
+async function updateSound(command, args) {
+  if (soundPending || !snapshot.connected) return;
+  soundPending = true;
+  soundError = '';
+  renderSound();
+  try { await invoke(command, args); }
+  catch (error) { soundError = String(error); }
+  finally {
+    soundPending = false;
+    renderSound();
+  }
 }
 
 async function focusTerminal(id) {
@@ -170,6 +205,11 @@ async function updateNotification(id, command) {
   }
 }
 
+byId('silence-all').addEventListener('click', () => updateSound('silence_all_sound'));
+byId('snooze-1').addEventListener('click', () => updateSound('snooze_sound', { seconds: 60 }));
+byId('snooze-5').addEventListener('click', () => updateSound('snooze_sound', { seconds: 300 }));
+// Refreshes only the countdown text; resuming is decided by the service.
+setInterval(renderSound, 1000);
 byId('hide').addEventListener('click', () => invoke('hide_window'));
 byId('resize').addEventListener('mousedown', (e) => { if (e.button === 0) getCurrentWindow().startResizeDragging('SouthEast'); });
 document.addEventListener('keydown', (e) => {
