@@ -1,0 +1,59 @@
+# Hooks, discovery, and development helpers
+
+Inherit the root rules. Python uses four-space indentation and the standard
+library; `test_ui.mjs` uses two-space JavaScript and Node's built-in test runner.
+Resolve repository paths from `__file__`, since hooks run from other directories.
+
+## Hook contract and startup
+
+- `codex_hook.py` consumes stdin JSON and emits valid hook JSON on stdout. Success
+  is `{}`; failures use `systemMessage`. Hooks must never grant/deny permissions,
+  block a completed turn through a decision, or mix diagnostic text into JSON.
+- Preserve Stop, PermissionRequest, and structured-question PreToolUse handling,
+  including `request_user_input_async` and namespaced tool names. A Stop means one
+  turn completed. Plain-text question detection is only a fallback heuristic.
+- Forward the event's `session_id`, falling back to `CODEX_THREAD_ID`; never use
+  cwd as session identity. Preserve actual questions/outcomes and API text limits.
+- Probe `/health` for identity and a supported API version. Preserve the file
+  lock and second health check around cold build/start so simultaneous hooks
+  start one service. Reuse healthy services and reopen a missing desktop app.
+- Keep local HTTP independent of proxy environment variables. Use timeouts,
+  detached service startup, and `target/desktop-notify.log` for build/start output.
+  Keep `build.py` as the common build/bundle entry point.
+- Pass subprocess arguments as lists. Never run conversation data as shell code.
+
+## Best-effort metadata
+
+- Keep context/origin collection independent: failure of either must not suppress
+  the alert. Discovery must not execute repository code or call models/network
+  services. Origin collection must not open apps or prompt for Automation access.
+- Read repo metadata from manifests and README fallbacks; handle worktree `.git`
+  files. Bound reads (currently 64 KiB metadata files, last 8 MiB of transcripts).
+- Transcripts are an unstable input format. Tolerate missing files, malformed
+  records, and unsupported shapes. Use existing request/progress/plan/goal text
+  instead of inventing summaries. Keep explicit context and `NOTIFY_*` overrides.
+- For tmux, find the GUI through the attached client for the originating session,
+  not merely the tmux server's ancestry; keep socket, stable pane, and client TTY.
+- Terminal registration is explicit, foreground Ghostty pairing keyed by app PID
+  and outer TTY. Store it under ignored `target/terminal-origins.json`, using a lock
+  and atomic replacement. Do not assign one registration to every Ghostty window
+  or mistake a core surface ID for a scripting terminal ID.
+
+## Global configuration and verification
+
+- `install_hooks.py` previews by default. Preserve unrelated hooks/configuration,
+  including the separate top-level notify integration, and create timestamped
+  backups before installation. Use `codex_rpc.py` and the installed Codex config
+  API to trust the exact returned definition hashes, then verify enabled/trusted
+  status. Do not bypass trust or hardcode hashes.
+- Editing repository scripts does not itself require installing hooks: installed
+  commands load the script on each invocation. Definitions changed by installation
+  require a new Codex session. Honor `CODEX_HOME` in installer paths.
+- Run `python3 -m unittest discover -s scripts -p 'test_*.py'` for Python changes;
+  run `node --test scripts/test_ui.mjs` for the UI test harness. Mock local HTTP,
+  processes, transcripts, environment, and home/config files in unit tests.
+- Real integration helpers play audio and depend on installed hooks;
+  `test_codex_live.py` also uses the configured account/model, and smoke-test
+  `--restart` discards service state. Do not treat them as ordinary unit tests.
+- Test alerts need unique session IDs and cleanup in `finally`. Dismiss the test's
+  current IDs so cleanup preserves other sessions and cannot clear replacements.
