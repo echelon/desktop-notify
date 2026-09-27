@@ -36,10 +36,11 @@ endpoint) is in the workspace [AGENTS.md](../../AGENTS.md#http-api-current-api-v
 | POST | `/dismiss/{id}` | Clear one row. |
 | GET | `/notifications` | All rows, newest first. |
 | GET | `/sound` | `{snoozed_until, alerting}`. |
-| POST | `/sound/stop` | Acknowledge every alerting row and cancel any snooze; rows stay. |
+| POST, GET | `/sound/stop` | Acknowledge every alerting row and cancel any snooze; rows stay. |
 | POST | `/sound/snooze` | `{seconds}` (1–86400): mute until that wall-clock time. |
 | POST | `/sound/resume` | End a snooze early. |
-| POST | `/stop` | Clear every row, cancel any snooze, stop all audio (`GET` also accepted). |
+| GET | `/stop` | Legacy `stop-sound` alias: same as `GET /sound/stop`; rows stay. |
+| POST | `/stop` | Clear every row, cancel any snooze, stop all audio. |
 | GET | `/state` | Rows, sound, audio engine, config, and desktop app status. Read-only. |
 | GET | `/health` | `{service, api_version, pid}`. |
 | POST | `/desktop/status` | Tray app heartbeat. |

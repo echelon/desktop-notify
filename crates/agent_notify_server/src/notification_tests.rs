@@ -1,7 +1,7 @@
 use crate::{
   audio_player::{AudioCommand, AudioPlayerHandle},
   config::{NotifyConfig, DEFAULT_CONFIG_PATH},
-  endpoints::{notification_handlers::*, stop_handler::stop_handler},
+  endpoints::{notification_handlers::*, stop_handler},
   server_state::ServerState,
 };
 use actix_web::{http::StatusCode, test, web, App};
@@ -34,10 +34,9 @@ fn routes(cfg: &mut web::ServiceConfig) {
     .route("/task_failed", web::post().to(task_failed))
     .route("/acknowledge/{id}", web::post().to(acknowledge))
     .route("/sound", web::get().to(sound))
-    .route("/sound/stop", web::post().to(stop_sound))
     .route("/sound/snooze", web::post().to(snooze))
     .route("/sound/resume", web::post().to(resume_sound))
-    .route("/stop", web::post().to(stop_handler));
+    .configure(stop_handler::routes);
 }
 
 #[actix_web::test]
@@ -537,6 +536,71 @@ fn snooze_request(seconds: i64) -> test::TestRequest {
     .uri("/sound/snooze")
     .insert_header(("Content-Type", "application/json"))
     .set_payload(format!(r#"{{"seconds":{seconds}}}"#))
+}
+
+#[actix_web::test]
+async fn legacy_stop_sound_preserves_rows_focus_and_waiting_tools() {
+  for path in ["/stop", "/sound/stop"] {
+    let (state, commands) = state();
+    let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+    for (endpoint, session) in [
+      ("awaiting_user_input", "question"),
+      ("all_tasks_finished", "done"),
+      ("task_failed", "failed"),
+      ("working", "busy"),
+    ] {
+      test::call_service(&app, test::TestRequest::post().uri(&format!("/{endpoint}"))
+      .set_json(serde_json::json!({
+        "session_id": session, "title": "Keep this task", "message": "Keep this message",
+        "tool_use_id": "pending-tool", "agent": "codex",
+        "context": {"repo_name": "same-repo"},
+        "origin": {"terminal_app": "com.mitchellh.ghostty", "terminal_id": session, "tmux_pane": "%5"}
+      })).to_request()).await;
+    }
+    test::call_service(&app, snooze_request(300).to_request()).await;
+    let (mut expected, waiting) = {
+      let current = state.notifications.lock().unwrap();
+      (current.active.clone(), current.waiting_tools.clone())
+    };
+    assert_eq!(expected.len(), 4);
+    assert_eq!(
+      waiting.get("question").map(String::as_str),
+      Some("pending-tool")
+    );
+    for row in &mut expected {
+      row.state = match row.state {
+        TaskState::InputNeeded => TaskState::InputNeededIgnored,
+        TaskState::Done => TaskState::DoneAcknowledged,
+        TaskState::Failed => TaskState::FailedAcknowledged,
+        other => other,
+      };
+    }
+    while commands.try_recv().is_ok() {}
+    let response: SoundState =
+      test::call_and_read_body_json(&app, test::TestRequest::get().uri(path).to_request()).await;
+    assert_eq!(response, SoundState::default());
+    let rows: Vec<Notification> = test::call_and_read_body_json(
+      &app,
+      test::TestRequest::get().uri("/notifications").to_request(),
+    )
+    .await;
+    assert_eq!(rows, expected); // IDs, order, text, context and Focus targets survive.
+    assert_eq!(state.notifications.lock().unwrap().waiting_tools, waiting);
+    assert!(commands
+      .try_iter()
+      .all(|command| matches!(command, AudioCommand::StopAll)));
+
+    // Stopping sound is permanent for these updates; a fresh update alerts again.
+    test::call_service(
+      &app,
+      alert_request("all_tasks_finished", "done").to_request(),
+    )
+    .await;
+    assert!(matches!(
+      commands.try_recv().unwrap(),
+      AudioCommand::PlayLoop(_)
+    ));
+  }
 }
 
 #[actix_web::test]

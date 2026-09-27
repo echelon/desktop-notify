@@ -1,8 +1,24 @@
 use actix_web::{web, HttpResponse, Responder};
 
+use super::notification_handlers::stop_sound;
 use crate::server_state::ServerState;
 
-/// `POST /stop` (also `GET`): clears every row, any snooze, and all audio. Hooks
+/// Older shells still use GET /stop for their `stop-sound` alias. Keep that
+/// request equivalent to the Stop sound button; only POST means Clear all.
+pub fn routes(cfg: &mut web::ServiceConfig) {
+  cfg.service(
+    web::resource("/sound/stop")
+      .route(web::get().to(stop_sound))
+      .route(web::post().to(stop_sound)),
+  );
+  cfg.service(
+    web::resource("/stop")
+      .route(web::get().to(stop_sound))
+      .route(web::post().to(stop_handler)),
+  );
+}
+
+/// `POST /stop`: clears every row, any snooze, and all audio. Hooks
 /// must never call it; use `POST /sound/stop` to quiet everything but keep rows.
 pub async fn stop_handler(state: web::Data<ServerState>) -> impl Responder {
   let mut current = state

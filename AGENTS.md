@@ -112,14 +112,15 @@ sessions keep `context`, `origin`, and `agent` when an update omits them.
 | --- | --- |
 | `POST /acknowledge/{id}` | Dismiss: an alerting row moves to its quiet state and stays listed. Returns `{stopped}`; stale or already-quiet IDs return `false`. |
 | `POST /dismiss/{id}` | Clear: remove that row. Returns `{stopped}`; stale IDs are harmless. |
-| `POST /stop` | Clear every row, cancel any snooze, and stop all audio (`GET` also accepted). Hooks must never call it. |
+| `POST /stop` | Clear every row, cancel any snooze, and stop all audio. Hooks must never call it. |
 
 **Global sound** (used by the app's sound bar):
 
 | Endpoint | Effect |
 | --- | --- |
 | `GET /sound` | `{snoozed_until, alerting}`; `snoozed_until` is RFC 3339 UTC or null. |
-| `POST /sound/stop` | Stop sound: acknowledge every alerting row and cancel any snooze. Rows stay. |
+| `POST /sound/stop` (also `GET`) | Stop sound: acknowledge every alerting row and cancel any snooze. Rows stay. |
+| `GET /stop` | Legacy `stop-sound` alias: identical to `GET /sound/stop`; rows and Focus targets stay. |
 | `POST /sound/snooze` | `{seconds}` (1–86400): mute until now + seconds. Replaces an earlier snooze. |
 | `POST /sound/resume` | End a snooze early. |
 
@@ -160,9 +161,9 @@ Hooks skip or adapt new calls on older services (`codex_hook.compatible`).
 
 - **Permanent:** `GET /` is the web interface for managing tasks, alerts, and
   sound, and the live API reference. Never remove it; keep it in sync with the API.
-- **Retained:** `GET /stop` only serves shells that still hold the old
-  `stop-sound` alias (which now uses `POST /sound/stop`). Remove it once no such
-  shells remain. `POST /stop` is the web interface's "Clear all tasks".
+- **Retained:** `GET /stop` serves shells that still hold the old `stop-sound`
+  alias. It uses the same sound-only handler as `POST /sound/stop` and must never
+  clear rows. `POST /stop` is the web interface's "Clear all tasks".
 - **Removed** (API 4, after confirming no hook, app, alias, or Codex config
   called them): the sound-only `GET /alert_beep|alert_done|alert_await` and
   `GET /loop_beep|loop_done|loop_await` endpoints (the loops cleared every row),

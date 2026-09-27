@@ -21,7 +21,7 @@ use crate::config::{NotifyConfig, DEFAULT_CONFIG_PATH};
 use crate::endpoints::notification_handlers::*;
 use crate::endpoints::root_handler::root_handler;
 use crate::endpoints::state_handler::state_handler;
-use crate::endpoints::stop_handler::stop_handler;
+use crate::endpoints::stop_handler;
 use crate::server_state::ServerState;
 
 pub mod audio_player;
@@ -78,10 +78,7 @@ async fn main() -> anyhow::Result<()> {
       // Permanent: the web interface for managing tasks, alerts, and sound,
       // plus the live API reference. Never remove it.
       .route("/", web::get().to(root_handler))
-      // Clear everything (rows, snooze, audio). POST is the web interface's
-      // "Clear all". GET only keeps shells that still hold the old `stop-sound`
-      // alias working; the alias now uses POST /sound/stop.
-      .route("/stop", web::get().to(stop_handler))
+      .configure(stop_handler::routes)
       .route("/state", web::get().to(state_handler))
       .route("/health", web::get().to(health))
       .route("/awaiting_user_input", web::post().to(awaiting_user_input))
@@ -92,11 +89,9 @@ async fn main() -> anyhow::Result<()> {
       .route("/task_failed", web::post().to(task_failed))
       .route("/acknowledge/{id}", web::post().to(acknowledge))
       .route("/sound", web::get().to(sound))
-      .route("/sound/stop", web::post().to(stop_sound))
       .route("/sound/snooze", web::post().to(snooze))
       .route("/sound/resume", web::post().to(resume_sound))
       .route("/desktop/status", web::post().to(desktop_status))
-      .route("/stop", web::post().to(stop_handler))
   })
   .bind(&bind_address)?;
   notifications::launch_desktop_app(server.addrs()[0]);

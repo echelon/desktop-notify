@@ -59,9 +59,10 @@ by most recent update and live in memory until cleared or the server restarts.
   stale IDs are harmless.
 - `GET /notifications` returns all rows, including quiet ones.
 - `GET /sound` returns `{snoozed_until, alerting}` (an RFC 3339 UTC timestamp or `null`).
-- `POST /sound/stop` quiets everything: every alerting row is acknowledged and any
+- `POST /sound/stop` (also `GET`) quiets everything: every alerting row is acknowledged and any
   snooze is cancelled. Rows stay listed; later updates sound again. The
-  `stop-sound` shell alias calls it.
+  `stop-sound` shell alias calls it. Legacy aliases using `GET /stop` have the
+  same sound-only behavior, retaining every row and its Focus target.
 - `POST /sound/snooze` with `{"seconds": 60}` (1 to 86,400) mutes all sound until
   that wall-clock time. Alerts arriving meanwhile stay quiet, then the loop
   resumes. Snoozing again replaces the deadline; `POST /sound/resume` ends it early.

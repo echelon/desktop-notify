@@ -44,7 +44,9 @@ Inherit the root rules, including **two-space Rust indentation**.
   beyond `MAX_SNOOZE` mean the clock moved backwards and count as elapsed.
 - `/notifications` includes quiet rows. Read endpoints must not alter playback,
   except that resuming an elapsed snooze on any read is how expiry is observed.
-- `/stop` clears every row, any snooze, and all audio.
+- `POST /stop` clears every row, any snooze, and all audio. Legacy `GET /stop`
+  must use the same sound-only handler as `POST /sound/stop`, preserving rows
+  and Focus targets for shells with older `stop-sound` aliases.
 - `GET /` (`static/index.html`) is permanent: the web interface for managing
   tasks and sound plus the API reference. Render row text with `textContent`, and
   update it with every API change.

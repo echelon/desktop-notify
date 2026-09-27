@@ -132,7 +132,8 @@
     <div class="table-wrap"><table>
       <tr><th>Endpoint</th><th>Effect</th></tr>
       <tr><td><code>GET /sound</code></td><td><code>{snoozed_until, alerting}</code> (RFC 3339 UTC or null)</td></tr>
-      <tr><td><code>POST /sound/stop</code></td><td>Acknowledge every alerting row and cancel any snooze; rows stay</td></tr>
+      <tr><td><code>POST /sound/stop</code> (also <code>GET</code>)</td><td>Acknowledge every alerting row and cancel any snooze; rows stay</td></tr>
+      <tr><td><code>GET /stop</code></td><td>Legacy stop-sound alias: same as GET /sound/stop; rows and Focus targets stay</td></tr>
       <tr><td><code>POST /sound/snooze</code></td><td><code>{"seconds": 1–86400}</code>: mute until that wall-clock time</td></tr>
       <tr><td><code>POST /sound/resume</code></td><td>End a snooze early</td></tr>
     </table></div>
