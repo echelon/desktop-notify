@@ -12,6 +12,9 @@ Resolve repository paths from `__file__`, since hooks run from other directories
 - Preserve Stop, PermissionRequest, and structured-question PreToolUse handling,
   including `request_user_input_async` and namespaced tool names. A Stop means one
   turn completed. Plain-text question detection is only a fallback heuristic.
+- The async question tool returns before the user answers; ignore that tool's
+  PostToolUse instead of resuming its waiting row. UserPromptSubmit handles the
+  next user message. Blocking question tools still resume on PostToolUse.
 - Forward the event's `session_id`, falling back to `CODEX_THREAD_ID`; never use
   cwd as session identity. Preserve actual questions/outcomes and API text limits.
 - Probe `/health` for identity and a supported API version. Preserve the file
@@ -40,8 +43,10 @@ Resolve repository paths from `__file__`, since hooks run from other directories
   `ghostty_surface.applescript` (arguments via argv), then restore the previous
   title as printable text. Only probe when Ghostty hosts the session, bound each
   lookup (3 s), cache per app PID and TTY, and revalidate the cached terminal
-  before reuse. Honor `NOTIFY_GHOSTTY_PROBE=0`. Tests must patch `ghostty` and
-  TTY writes; never script the real Ghostty or write to a real TTY in tests.
+  before reuse. Lock the complete probe per app/TTY without blocking another
+  hook; a scripting failure ends retries. Honor `NOTIFY_GHOSTTY_PROBE=0`. Tests
+  must patch `ghostty` and TTY writes; never script the real Ghostty or write to a
+  real TTY in tests.
 - Inside tmux, report the server PID, session/window IDs, index, and names; read
   free-text names separately rather than splitting them from one format string.
 - Manual terminal registration is explicit, foreground Ghostty pairing keyed by app PID
@@ -67,6 +72,11 @@ Resolve repository paths from `__file__`, since hooks run from other directories
 - Editing repository scripts does not itself require installing hooks: installed
   commands load the script on each invocation. Definitions changed by installation
   require a new Codex session. Honor `CODEX_HOME` in installer paths.
+- `install_hooks.py --with-guidance` additionally manages a marked section of
+  Codex's global `AGENTS.md` from `docs/codex/AGENTS.md`, expanding this checkout's
+  path. Preserve personal instructions, back up existing content, keep the sibling
+  relative CLAUDE symlink, and reject malformed markers or conflicting links
+  before changing configuration. Preview and verification support the same flag.
 - `codex_hook.py` appends every decision to the rolling `target/hook-events.jsonl`
   (never failing the hook) and rotates the service log on start. Tests must patch
   `EVENT_LOG` to a temporary file.

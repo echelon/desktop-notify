@@ -1,5 +1,6 @@
 """Collect best-effort focus hints without opening apps or prompting for access."""
 import fcntl
+import hashlib
 import os
 import json
 from pathlib import Path
@@ -96,7 +97,12 @@ def probe_ghostty(tty):
         os.write(fd, f"\033]2;{marker}\007".encode())
         for _ in range(8):
             time.sleep(0.05)  # Ghostty applies title changes asynchronously.
-            found = surface(ghostty("title", marker))
+            output = ghostty("title", marker)
+            # A timeout or scripting failure will not improve by retrying eight
+            # times. Return promptly so the hook can still deliver its alert.
+            if output is None:
+                break
+            found = surface(output)
             if found:
                 break
         # Titles are terminal data: restore them as text, never as sequences.
@@ -116,6 +122,25 @@ def ghostty_origin(origin):
     key = registration_key(origin)
     if not key or origin.get("terminal_app") != GHOSTTY:
         return {}
+    # Several panes/sessions can share one outer TTY. Serialize the complete
+    # snapshot/marker/restore operation, not just the eventual cache write.
+    # Busy callers keep their existing hints and never delay an alert waiting
+    # for another process's Automation prompt. Re-read the cache inside the lock.
+    try:
+        REGISTRATIONS.parent.mkdir(exist_ok=True)
+        digest = hashlib.sha256(key.encode()).hexdigest()
+        with (REGISTRATIONS.parent / f"ghostty-probe-{digest}.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return registered_origin(origin)
+            return locked_ghostty_origin(origin, key)
+    except OSError:
+        return registered_origin(origin)
+
+
+def locked_ghostty_origin(origin, key):
+    """Resolve one surface while its outer TTY's probe lock is held."""
     cached = registered_origin(origin)
     if cached.get("terminal_id"):
         current = surface(ghostty("terminal", cached["terminal_id"]))

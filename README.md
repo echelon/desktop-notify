@@ -128,20 +128,30 @@ model/network requests:
   `NOTIFY_CWD`, `NOTIFY_WORK_ARC`, `NOTIFY_CURRENT_ASK`, `NOTIFY_REPO_NAME`, and
   `NOTIFY_REPO_DESCRIPTION`. Direct API callers can update context on every alert.
 
-The three existing hook definitions are unchanged, so already-running sessions
-use the new collection logic on their next question, approval, or completion.
+Installed commands load the Python scripts on every invocation, so collection
+improvements apply at the next hook event. New event definitions require a new
+agent session after installation.
 
 ## Global Codex CLI hooks
 
 For how hooks, origin capture, and Focus fit together, including exact Ghostty
 and tmux targeting and troubleshooting, see
-[Connecting an agent to the server](AGENTS.md#connecting-an-agent-to-the-server).
+[Hooks: how agents report status](AGENTS.md#hooks-how-agents-report-status) and
+[Focus: finding the exact terminal](AGENTS.md#focus-finding-the-exact-terminal).
 
 ```sh
 python3 scripts/install_hooks.py            # Preview the exact hooks
 python3 scripts/install_hooks.py --install  # Install, back up, trust, verify
 python3 scripts/install_hooks.py --verify   # Ask Codex to verify enabled + trusted
 ```
+
+Add `--with-guidance` to preview, install, or verify persistent Codex instructions
+alongside the hooks. This manages only a marked Desktop Notify section in
+`$CODEX_HOME/AGENTS.md` (default `~/.codex/AGENTS.md`), preserves other instructions,
+backs up an existing file, and creates the sibling `CLAUDE.md -> AGENTS.md` link.
+The source is [`docs/codex/AGENTS.md`](docs/codex/AGENTS.md); it documents tool use,
+exact terminal discovery, maintenance, and safe diagnostics for future sessions.
+For the complete setup, use `python3 scripts/install_hooks.py --install --with-guidance`.
 
 The installer updates **`~/.codex/hooks.json`** and stores the exact definitions'
 trust hashes in **`~/.codex/config.toml`** using Codex's configuration API. It replaces
@@ -158,7 +168,8 @@ python3 scripts/install_hooks.py --claude            # Preview
 python3 scripts/install_hooks.py --claude --install  # Install with a backup
 ```
 
-This adds the same Stop, PermissionRequest, and PreToolUse (`AskUserQuestion`)
+This adds Stop, PermissionRequest, PreToolUse (`AskUserQuestion`),
+UserPromptSubmit, PostToolUse, and Claude's StopFailure
 hooks to **`~/.claude/settings.json`** (or `$CLAUDE_CONFIG_DIR`), preserving
 unrelated settings. It removes older `~/.claude/agent_notify*.sh` hooks: those
 called the now-removed sound-only `/loop_*` endpoints and `/stop`, which created
@@ -171,6 +182,13 @@ as the current task.
 | `Stop` | `POST /all_tasks_finished`, with the final response as the outcome |
 | `PermissionRequest` | `POST /awaiting_user_input`, with the approval description |
 | `PreToolUse` matching `request_user_input` / `request_user_input_async` | `POST /awaiting_user_input`, with the actual questions |
+| `UserPromptSubmit` | `POST /working`, with the submitted prompt and context |
+| `PostToolUse` | `POST /working` with `only_if_waiting` and the matching `tool_use_id`; the immediate return of `request_user_input_async` is ignored |
+
+The async question tool returns before an answer exists, so its row stays waiting
+until the next user prompt or status update. Blocking question tools resume their
+row after the answer. The tool ID prevents unrelated parallel tools from resuming
+another tool's question. Claude Code's additional `StopFailure` calls `/task_failed`.
 
 Plain-text final questions are treated as awaiting input using a small heuristic;
 structured question tools are more reliable. Titles include the working directory
@@ -184,8 +202,10 @@ Subagent hooks use their parent's session ID; this integration tracks independen
 Codex sessions. The existing hook commands load the updated Python script on every
 invocation, so already-running sessions with these hooks pick up session tracking.
 
-Every matching hook first checks `/health`. When the server is absent, a file lock
-serializes concurrent launches, `cargo build --locked --workspace` rebuilds the Rust
+Status-producing hooks check `/health`. Working updates skip silently if the
+service is down or older than API 4, and never build or open the app. For alerts,
+when the server is absent, a file lock serializes concurrent launches,
+`python3 scripts/build.py` rebuilds the Rust
 server and Tauri app, and the server starts detached. Existing healthy servers are
 reused; a closed tray app is reopened. Build/start output goes to
 `target/desktop-notify.log`. Hook
@@ -236,7 +256,7 @@ interact with the terminal and click **Stop sound** or **×** later. It does not
 dismiss the alert or stop its sound. Alerts without origin details still work
 and show a disabled Focus button.
 
-Both notification POST endpoints accept an optional `origin` object. Every field
+The status POST endpoints accept an optional `origin` object. Every field
 inside it is optional, including the window and pane fields:
 
 ```json
@@ -281,7 +301,10 @@ so the hook identifies the surface itself: it briefly sets the outer TTY's title
 (the attached tmux client's TTY, bypassing tmux) to a random marker, asks Ghostty
 which terminal carries it, and restores the previous title. The window, tab, and
 terminal IDs are cached per Ghostty process and TTY in `target/terminal-origins.json`;
-later alerts only confirm the cached terminal still exists. The lookup runs a
+later alerts only confirm the cached terminal still exists. A per-TTY lock prevents
+simultaneous hooks from overwriting each other's probe title; a busy probe leaves
+the other hook's existing hints intact. A failed scripting lookup ends the probe
+without repeated timeouts. The lookup runs a
 fixed AppleScript with a 3-second limit and only when Ghostty hosts the session;
 depending on what launched the agent, macOS may ask once to allow it to control
 Ghostty. Set `NOTIFY_GHOSTTY_PROBE=0` to disable it. Inside tmux the hook also

@@ -45,7 +45,8 @@ frontend lives in `../../ui/` and has its own rules.
   Fall back when a narrower target has closed; report fallback warnings honestly.
   Only activate running apps and never guess an ambiguous application fallback.
 - Ghostty's core surface ID is not its AppleScript terminal ID. Exact Ghostty
-  window pairing comes from `scripts/register_terminal.py`; preserve that path.
+  targeting comes from the hook's outer-TTY probe and cached window/tab/terminal
+  IDs; `scripts/register_terminal.py` remains the foreground manual fallback.
 - tmux selection requires the supplied absolute socket and a resolved stable pane
   ID. When `tmux_server_pid` is supplied, refuse a socket now served by another
   process: pane IDs restart with the server. Never use an arbitrary inherited

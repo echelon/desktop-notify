@@ -237,6 +237,11 @@ def notification_for(event):
         message = "\n\n".join(str(d) for d in details if d) or "The turn ended with an error."
         endpoint = "/task_failed"
     elif name in ("UserPromptSubmit", "PostToolUse"):
+        # The async question tool returns as soon as the question is displayed,
+        # before the user answers. Its PostToolUse must leave the alert waiting;
+        # the subsequent UserPromptSubmit (or a final Stop) supplies the update.
+        if name == "PostToolUse" and re.search(r"(^|.*[._])request_user_input_async$", tool):
+            return None
         session_id = event.get("session_id") or os.environ.get("CODEX_THREAD_ID")
         if not isinstance(session_id, str) or not session_id.strip():
             return None  # /working updates one session's row; there is none to update.

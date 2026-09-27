@@ -117,6 +117,25 @@ class HookTests(unittest.TestCase):
         ensure.assert_called_once()
         self.assertEqual(self.run_hook(event, version=3)[0][0][0], "/all_tasks_finished")
 
+    def test_async_question_return_does_not_mean_the_user_answered(self):
+        for name in ("request_user_input_async", "functions.request_user_input_async",
+                     "mcp__questions__request_user_input_async"):
+            with self.subTest(tool=name):
+                event = {"session_id": "s1", "tool_name": name, "tool_use_id": "question-1"}
+                posts, _ = self.run_hook({**event, "hook_event_name": "PreToolUse"})
+                self.assertEqual(posts[0][0], "/awaiting_user_input")
+                self.assertEqual(posts[0][1]["tool_use_id"], "question-1")
+                posts, ensure = self.run_hook({**event, "hook_event_name": "PostToolUse"})
+                self.assertEqual(posts, [])
+                ensure.assert_not_called()
+        posts, _ = self.run_hook({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": "Continue"})
+        self.assertEqual(posts[0][0], "/working")
+        # Blocking questions still resume on their matching tool completion.
+        posts, _ = self.run_hook({"hook_event_name": "PostToolUse", "session_id": "s1",
+                                 "tool_name": "functions.request_user_input", "tool_use_id": "question-2"})
+        self.assertEqual(posts, [("/working", {"session_id": "s1", "only_if_waiting": True,
+                                             "tool_use_id": "question-2"})])
+
     def test_each_hook_decision_is_recorded_with_its_reason(self):
         self.run_hook({"hook_event_name": "Stop", "session_id": "s1",
                        "last_assistant_message": "Done.\n\nWaiting for your approval of the plan."})

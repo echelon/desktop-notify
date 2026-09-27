@@ -86,20 +86,35 @@ def run(restart=False):
             assert a.get("origin", {}).get("pid"), "Installed hook did not attach focus metadata"
         print("PASS concurrent installed hooks created two independent session rows", flush=True)
 
-        for event in [
+        invoke({"hook_event_name": "UserPromptSubmit", "session_id": sessions[0],
+                "cwd": done["cwd"], "prompt": "Verify the modern Codex lifecycle"})
+        assert session_notification(sessions[0])["state"] == "working"
+        assert session_notification(sessions[0])["agent"] == "codex"
+        assert session_notification(sessions[1]) == b
+        print("PASS prompt submission marks only its session working", flush=True)
+
+        for index, event in enumerate([
             {"hook_event_name": "PreToolUse", "tool_name": "request_user_input",
              "tool_input": {"questions": [{"question": "Does this notification stay visible?"}]}},
             {"hook_event_name": "PreToolUse", "tool_name": "request_user_input_async",
              "tool_input": {"questions": [{"title": "Can you see both agent rows?"}]}},
             {"hook_event_name": "PermissionRequest", "tool_input": {"description": "Test approval request"}},
-        ]:
-            invoke({**event, "cwd": "/tmp/hook-smoke-test", "session_id": sessions[0]})
+        ]):
+            event = {**event, "cwd": "/tmp/hook-smoke-test", "session_id": sessions[0],
+                     "tool_use_id": f"smoke-question-{index}"}
+            invoke(event)
             current = session_notification(sessions[0])
             assert current["state"] == "input_needed"
             assert session_notification(sessions[1]) == b
             assert current["context"]["work_arc"] == "Verify independent agent notifications"
             eventually(lambda: hook.http("/state")["audio"]["loop_name"] == "await")
             assert hook.http("/health")["pid"] == pid
+            invoke({"hook_event_name": "PostToolUse", "session_id": sessions[0],
+                    "tool_name": "Bash", "tool_use_id": "unrelated-parallel-tool"})
+            assert session_notification(sessions[0]) == current
+            if event.get("tool_name") == "request_user_input_async":
+                invoke({**event, "hook_event_name": "PostToolUse"})
+                assert session_notification(sessions[0]) == current
         print("PASS questions and approvals update only their own session", flush=True)
 
         assert hook.http("/dismiss/" + a["id"], {}) == {"stopped": False}
@@ -108,6 +123,12 @@ def run(restart=False):
         assert hook.http("/acknowledge/" + current["id"], {}) == {"stopped": True}
         assert session_notification(sessions[0])["state"].endswith(("_acknowledged", "_ignored"))
         assert session_notification(sessions[1]) == b
+        invoke({"hook_event_name": "PostToolUse", "session_id": sessions[0],
+                "tool_name": "Bash", "tool_use_id": event["tool_use_id"]})
+        current = session_notification(sessions[0])
+        assert current["state"] == "working"
+        assert current["agent"] == "codex"
+        print("PASS async questions stay waiting; only the matching tool resumes a waiting row", flush=True)
         assert hook.http("/dismiss/" + b["id"], {}) == {"stopped": True}
         assert session_notification(sessions[0])["id"] == current["id"]
         assert session_notification(sessions[1]) is None
@@ -118,6 +139,9 @@ def run(restart=False):
         updated = session_notification(sessions[0])
         assert updated["state"] == "done"
         assert updated["id"] != current["id"]
+        invoke({"hook_event_name": "PostToolUse", "session_id": sessions[0],
+                "tool_name": "Bash", "tool_use_id": event["tool_use_id"]})
+        assert session_notification(sessions[0]) == updated
         eventually(lambda: updated["id"] in hook.http("/state")["desktop"].get("displayed_ids", []))
         print("PASS new update re-arms the session and reaches the running desktop app", flush=True)
     finally:

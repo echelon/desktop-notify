@@ -188,7 +188,7 @@ context and origin, and posts to the API. It always prints `{}` (or a
 | UserPromptSubmit | `/working` with the prompt as title/message | `working` |
 | PermissionRequest | `/awaiting_user_input` (+ `tool_use_id`) | `input_needed` |
 | PreToolUse matching `(^\|.*[._])(request_user_input(_async)?\|AskUserQuestion)$` | `/awaiting_user_input` (+ `tool_use_id`) | `input_needed` |
-| PostToolUse (every tool) | `/working` with `only_if_waiting` (+ `tool_use_id`) | `input_needed*` → `working`, else no change |
+| PostToolUse (except `request_user_input_async`'s immediate return) | `/working` with `only_if_waiting` (+ `tool_use_id`) | `input_needed*` → `working`, else no change |
 | Stop (turn finished) | `/all_tasks_finished`, or `/awaiting_user_input` only if the message's closing paragraph asks a question or requests input | `done` / `input_needed` |
 | StopFailure (Claude Code only; Codex has no such event) | `/task_failed` | `failed` |
 
@@ -202,6 +202,9 @@ Principles:
   `{session_id, only_if_waiting, tool_use_id}`, without discovery, in about 65 ms.
   An asynchronous call could land after a newer question and cancel it. Matching
   `tool_use_id` stops a parallel tool from cancelling another tool's prompt.
+- **An async question returning is not an answer.** Ignore its PostToolUse event;
+  the next UserPromptSubmit or final status updates the row. Blocking questions
+  still resume on their matching PostToolUse.
 - **A finished turn is `done`**, even when work continues in the background.
   Report the background result as a new status when it completes. Put any real
   question in the closing paragraph, because Stop classification reads only that.
@@ -226,6 +229,12 @@ Install with the installer, never by hand, then start **new** agent sessions
 python3 scripts/install_hooks.py --install           # Codex: ~/.codex/hooks.json + trust hashes
 python3 scripts/install_hooks.py --claude --install  # Claude Code: ~/.claude/settings.json
 ```
+
+For persistent Codex guidance, add `--with-guidance` to preview, install, or verify.
+The installer expands `docs/codex/AGENTS.md` into a managed section of
+`$CODEX_HOME/AGENTS.md`, preserving unrelated instructions and backing up existing
+content, with `CLAUDE.md -> AGENTS.md` beside it. Edit the repository source and
+reinstall; do not maintain a separate personal copy of the rules.
 
 Omit `--install` to preview. Both back up and preserve unrelated hooks and
 settings, replace earlier versions of this hook in place, and remove old
@@ -286,7 +295,9 @@ Capture happens in the hook, at alert time:
    outer TTY (bypassing tmux), and asks the fixed read-only
    `scripts/ghostty_surface.applescript` which terminal carries the marker. It
    then restores the old title as printable text and records `window_id`,
-   `tab_id`, and `terminal_id`. The result is cached in ignored
+   `tab_id`, and `terminal_id`. A nonblocking per-app/TTY lock protects the whole
+   probe from concurrent hooks on the same surface; contending hooks use existing
+   hints, and failed scripting calls stop retries. The result is cached in ignored
    `target/terminal-origins.json` under `<app_pid>:<tty>`. Later alerts only
    confirm the cached terminal still exists, since a live surface keeps its PTY.
    A missing terminal triggers a fresh probe. Manual `register_terminal.py`

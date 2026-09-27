@@ -20,6 +20,10 @@ ROOT = Path(__file__).resolve().parents[1]
 CODEX_DIR = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 HOOKS_PATH = CODEX_DIR / "hooks.json"
 CONFIG_PATH = CODEX_DIR / "config.toml"
+GUIDANCE_PATH = CODEX_DIR / "AGENTS.md"
+GUIDANCE_SOURCE = ROOT / "docs/codex/AGENTS.md"
+GUIDANCE_START = "<!-- desktop-notify:begin -->"
+GUIDANCE_END = "<!-- desktop-notify:end -->"
 HOOK_SCRIPT = str(ROOT / "scripts/codex_hook.py")
 # Each install self-reports its agent; the hook's environment detection is a fallback.
 COMMAND = shlex.join([sys.executable, HOOK_SCRIPT, "--agent", "codex"])
@@ -121,10 +125,38 @@ def own_hooks(rpc):
     return hooks
 
 
-def install():
+def guidance_block():
+    source = GUIDANCE_SOURCE.read_text().replace("@DESKTOP_NOTIFY_ROOT@", str(ROOT)).rstrip()
+    return f"{GUIDANCE_START}\n{source}\n{GUIDANCE_END}\n"
+
+
+def guidance_configuration():
+    """Replace only our marked section; leave personal instructions intact."""
+    original = GUIDANCE_PATH.read_text() if GUIDANCE_PATH.exists() else ""
+    starts, ends = original.count(GUIDANCE_START), original.count(GUIDANCE_END)
+    if starts == ends == 0:
+        return original + ("\n\n" if original and not original.endswith("\n\n") else "") + guidance_block()
+    if starts != 1 or ends != 1 or original.index(GUIDANCE_END) < original.index(GUIDANCE_START):
+        raise RuntimeError(f"Unbalanced Desktop Notify markers in {GUIDANCE_PATH}; leaving guidance unchanged")
+    before, rest = original.split(GUIDANCE_START, 1)
+    _, after = rest.split(GUIDANCE_END, 1)
+    return before + guidance_block().rstrip("\n") + after
+
+
+def guidance_link():
+    link = GUIDANCE_PATH.with_name("CLAUDE.md")
+    if (link.exists() or link.is_symlink()) and not (link.is_symlink() and os.readlink(link) == "AGENTS.md"):
+        raise RuntimeError(f"{link} already exists and is not CLAUDE.md -> AGENTS.md; leaving it unchanged")
+    return link
+
+
+def install(with_guidance=False):
     document = configuration()
+    guidance = guidance_configuration() if with_guidance else None
+    link = guidance_link() if with_guidance else None
+    CODEX_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    for path in (HOOKS_PATH, CONFIG_PATH):
+    for path in (HOOKS_PATH, CONFIG_PATH, *([GUIDANCE_PATH] if with_guidance else [])):
         if path.exists():
             backup = path.with_name(path.name + ".desktop-notify-backup-" + stamp)
             shutil.copy2(path, backup)
@@ -140,10 +172,16 @@ def install():
                    "value": True, "mergeStrategy": "replace"} for h in hooks]
         edits.append({"keyPath": "features.hooks", "value": True, "mergeStrategy": "replace"})
         rpc.call("config/batchWrite", {"edits": edits, "filePath": str(CONFIG_PATH)})
-    verify()
+    if with_guidance:
+        temporary = GUIDANCE_PATH.with_suffix(".md.desktop-notify-tmp")
+        temporary.write_text(guidance)
+        temporary.replace(GUIDANCE_PATH)
+        if not link.is_symlink():
+            link.symlink_to("AGENTS.md")
+    verify(with_guidance)
 
 
-def verify():
+def verify(with_guidance=False):
     with CodexRPC() as rpc:
         for hook in own_hooks(rpc):
             print(f'{hook["eventName"]}: enabled={hook["enabled"]}, trust={hook["trustStatus"]}, command={hook["command"]}')
@@ -151,6 +189,12 @@ def verify():
                 raise RuntimeError("Hook is not enabled and trusted")
     print(f"Global hooks: {HOOKS_PATH}")
     print(f"Hook trust: {CONFIG_PATH}")
+    if with_guidance:
+        if not GUIDANCE_PATH.exists() or GUIDANCE_PATH.read_text() != guidance_configuration():
+            raise RuntimeError("Desktop Notify guidance is absent or outdated; reinstall with --with-guidance")
+        if not guidance_link().is_symlink():
+            raise RuntimeError("Missing CLAUDE.md -> AGENTS.md guidance link")
+        print(f"Codex guidance: {GUIDANCE_PATH}")
 
 
 if __name__ == "__main__":
@@ -159,14 +203,20 @@ if __name__ == "__main__":
     mode.add_argument("--install", action="store_true")
     mode.add_argument("--verify", action="store_true")
     parser.add_argument("--claude", action="store_true", help="target Claude Code instead of Codex")
+    parser.add_argument("--with-guidance", action="store_true", help="also manage Desktop Notify instructions in Codex AGENTS.md")
     args = parser.parse_args()
+    if args.claude and args.with_guidance:
+        parser.error("--with-guidance applies to Codex only")
     if args.claude:
         if args.verify:
             parser.error("--verify applies to Codex hook trust only")
         install_claude() if args.install else print(json.dumps(claude_configuration(), indent=2))
     elif args.install:
-        install()
+        install(args.with_guidance)
     elif args.verify:
-        verify()
+        verify(args.with_guidance)
     else:
         print(json.dumps(configuration(), indent=2))
+        if args.with_guidance:
+            guidance_link()
+            print(f"\nGuidance: {GUIDANCE_PATH}\n{guidance_configuration()}")

@@ -1,4 +1,6 @@
 import json
+import fcntl
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -106,6 +108,28 @@ class OriginTests(unittest.TestCase):
         result, writes, _ = self.probe({("terminal", "gone"): "", ("titles",): "T3\tnew", ("title", "marker"): "W3\nTB3\nT3"})
         self.assertEqual(result["terminal_id"], "T3")
         self.assertEqual(len(writes), 2)
+
+    def test_parallel_probe_on_same_tty_never_overwrites_the_active_marker(self):
+        key = "55:/dev/ttys027"
+        lock_path = self.registrations.parent / f"ghostty-probe-{hashlib.sha256(key.encode()).hexdigest()}.lock"
+        with lock_path.open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result, writes, opened = self.probe({("titles",): "T2\tOriginal"})
+        self.assertEqual(result, {})
+        self.assertEqual(writes, [])
+        opened.assert_not_called()
+        self.ghostty.assert_not_called()
+        # Once the owner finishes, a later hook can discover this surface.
+        result, writes, _ = self.probe({("titles",): "T2\tOriginal", ("title", "marker"): "W2\nTB2\nT2"})
+        self.assertEqual(result["terminal_id"], "T2")
+        self.assertEqual(len(writes), 2)
+
+    def test_failed_lookup_restores_title_without_repeated_timeouts(self):
+        result, writes, _ = self.probe({("titles",): "T2\tOriginal"})
+        self.assertEqual(result, {})
+        self.assertEqual(len(writes), 2)
+        self.assertEqual(writes[-1], "\x07")
+        self.assertEqual(self.ghostty.call_count, 2)
 
     def test_unavailable_or_ambiguous_ghostty_falls_back_to_manual_pairing(self):
         origin.save_registration("55:/dev/ttys027", {"terminal_app": "com.mitchellh.ghostty", "window_id": "manual"})
