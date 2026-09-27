@@ -39,7 +39,7 @@ def run():
                 if method == "item/tool/requestUserInput":
                     params = message["params"]
                     notification = eventually(lambda: (n if (n := session_notification(thread_id)) and
-                                                       n["kind"] == "awaiting_user_input" else None))
+                                                       n["state"] == "input_needed" else None))
                     assert "Continue the Desktop Notify integration test" in notification["message"]
                     eventually(lambda: hook.http("/state")["audio"]["loop_name"] == "await")
                     print("PASS actual Codex request_user_input -> awaiting notification and sound", flush=True)
@@ -53,9 +53,9 @@ def run():
                 elif "id" in message and "method" in message:
                     raise AssertionError(f"Unexpected server request: {method}")
             assert answered and completed, "Codex did not complete the question test"
-            eventually(lambda: (n := session_notification(thread_id)) and n["kind"] == "all_tasks_finished")
+            eventually(lambda: (n := session_notification(thread_id)) and n["state"] == "done")
             # Another session may still have a question with sound priority.
-            assert not session_notification(thread_id)["silenced"]
+            assert session_notification(thread_id)["state"] == "done"
             print("PASS actual Codex Stop -> completion notification and sound", flush=True)
     finally:
         if thread_id:

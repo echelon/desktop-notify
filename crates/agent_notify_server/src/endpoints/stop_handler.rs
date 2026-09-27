@@ -2,6 +2,8 @@ use actix_web::{web, HttpResponse, Responder};
 
 use crate::server_state::ServerState;
 
+/// `POST /stop` (also `GET`): clears every row, any snooze, and all audio. Hooks
+/// must never call it; use `POST /sound/stop` to quiet everything but keep rows.
 pub async fn stop_handler(state: web::Data<ServerState>) -> impl Responder {
   let mut current = state
     .notifications

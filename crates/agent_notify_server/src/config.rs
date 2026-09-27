@@ -15,12 +15,9 @@ pub const DEFAULT_ESCALATE_WAIT_3_SECS: u64 = 45;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct NotifyConfig {
-  pub alert_beep_sound: Option<PathBuf>,
   pub alert_done_sound: Option<PathBuf>,
   pub alert_await_user_input_sound: Option<PathBuf>,
 
-  #[serde(default)]
-  pub extra_alert_beep_sounds: Vec<PathBuf>,
   #[serde(default)]
   pub extra_alert_done_sounds: Vec<PathBuf>,
   #[serde(default)]
@@ -112,10 +109,8 @@ impl NotifyConfig {
   }
 
   fn resolve_relative_paths(&mut self, base: &Path) {
-    resolve_opt(&mut self.alert_beep_sound, base);
     resolve_opt(&mut self.alert_done_sound, base);
     resolve_opt(&mut self.alert_await_user_input_sound, base);
-    resolve_vec(&mut self.extra_alert_beep_sounds, base);
     resolve_vec(&mut self.extra_alert_done_sounds, base);
     resolve_vec(&mut self.extra_alert_await_sounds, base);
   }

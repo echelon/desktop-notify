@@ -20,41 +20,41 @@ Inherit the root rules, including **two-space Rust indentation**.
 - Validate the entire request and required sound files before changing rows or
   audio. Invalid origin/context/session data must leave the previous state intact.
 - Keep one row per `session_id`, with `None` as a separate legacy slot. An update
-  replaces only its own row, gets a fresh 32-character hex ID, becomes unsilenced,
+  replaces only its own row, gets a fresh 32-character hex ID and its new state,
   and moves to the front. Do not key sessions by cwd, project name, or process ID.
 - For named sessions, retain origin when omitted and merge context through
   `SessionContext::apply`. Unassigned requests do not inherit previous context.
 - Serialize row mutation and audio reconciliation under the same notification
   lock. Enqueue audio commands before releasing it so concurrent actions cannot
   leave an older sound playing over newer state. Do not hold locks across awaits.
-- Silence/dismiss operate on the current notification ID. Stale IDs are harmless
+- Acknowledge/dismiss operate on the current notification ID. Stale IDs are harmless
   and return `stopped: false`; never resolve them to the session's replacement.
-- Rows change state only through `Notification::set_state`. Audio plays the newest
-  `input_needed`, else `failed`, else `done` row. If `audio_id` is unchanged,
-  leave playback alone. `/acknowledge` (alias `/silence`) moves one alerting row
-  to its quiet state; global Stop sound does so for all of them.
+- A row's `state` is its only status. Audio plays the newest `input_needed`,
+  else `failed`, else `done` row. If `audio_id` is unchanged, leave playback
+  alone. `/acknowledge` moves one alerting row to its quiet state; global
+  `/sound/stop` does so for all of them.
 - `/working` never alerts. With `only_if_waiting` it must not create rows or
   revive finished ones, and must not resume a row waiting on a different
   `tool_use_id` (`waiting_tools`). Every replacement forgets the previous waiting
   tool.
-- Sound controls are global. `/sound/silence` silences every current row; a
+- Sound controls are global. `/sound/stop` acknowledges every alerting row; a
   snooze stores a chrono `DateTime<Utc>` deadline and mutes the loop without
   silencing rows. Never use a timer or sleep for snooze expiry: compare the
   deadline with `Utc::now()` when state is locked (`lock_and_resume`). Deadlines
   beyond `MAX_SNOOZE` mean the clock moved backwards and count as elapsed.
-- `/notifications` includes quiet rows; `/notification` returns the newest row
-  for older clients. Preserve legacy `/state` fields alongside the list and
-  `audio_notification_id`. Read endpoints must not alter playback, except that
-  resuming an elapsed snooze on any read is how expiry is observed.
-- `/stop` clears every row, any snooze, and all audio. Legacy sound-only loop endpoints clear
-  the row list and replace the loop; one-shots mix over the loop.
+- `/notifications` includes quiet rows. Read endpoints must not alter playback,
+  except that resuming an elapsed snooze on any read is how expiry is observed.
+- `/stop` clears every row, any snooze, and all audio.
+- `GET /` (`static/index.html`) is permanent: the web interface for managing
+  tasks and sound plus the API reference. Render row text with `textContent`, and
+  update it with every API change.
 - Keep `/health` service identity/version compatible with `scripts/codex_hook.py`.
   Coordinate any API version change with its health check.
 
 ## Audio and lifecycle
 
-- Preserve one output stream, the reusable one-shot sink, and a cancellable loop
-  supervisor with independent voices. Do not reintroduce shell/afplay loops.
+- Preserve one output stream and a cancellable loop supervisor with independent
+  voices. Do not reintroduce shell/afplay loops.
 - Loop replacement and shutdown must stop and join the old voices. Keep sleeps
   interruptible so Ctrl+C and Stop do not wait for a full sound or escalation gap.
 - Keep gap/jitter fallback schedules and elapsed-time escalation semantics in

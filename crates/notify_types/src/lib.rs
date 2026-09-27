@@ -40,29 +40,6 @@ impl TaskState {
   pub fn is_waiting(self) -> bool {
     matches!(self, Self::InputNeeded | Self::InputNeededIgnored)
   }
-
-  /// The `kind` older clients understand.
-  pub fn legacy_kind(self) -> &'static str {
-    match self {
-      Self::Working => "working",
-      Self::InputNeeded | Self::InputNeededIgnored => "awaiting_user_input",
-      Self::Done | Self::DoneAcknowledged => "all_tasks_finished",
-      Self::Failed | Self::FailedAcknowledged => "task_failed",
-    }
-  }
-
-  fn from_legacy(kind: &str, silenced: bool) -> Self {
-    let state = match kind {
-      "working" => return Self::Working,
-      "awaiting_user_input" => Self::InputNeeded,
-      "task_failed" => Self::Failed,
-      _ => Self::Done,
-    };
-    match state.acknowledged() {
-      Some(quiet) if silenced => quiet,
-      _ => state,
-    }
-  }
 }
 
 /// The coding agent that reported a row, when the producer knows it.
@@ -81,15 +58,9 @@ pub struct Notification {
   pub id: String,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub session_id: Option<String>,
-  /// Authoritative when present; rows from older servers derive it from
-  /// `kind` and `silenced`, which are kept in sync for older clients.
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub state: Option<TaskState>,
+  pub state: TaskState,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub agent: Option<Agent>,
-  #[serde(default)]
-  pub silenced: bool,
-  pub kind: String,
   pub title: String,
   pub message: String,
   #[serde(default, skip_serializing_if = "SessionContext::is_empty")]
@@ -98,26 +69,8 @@ pub struct Notification {
   pub origin: Option<Origin>,
 }
 
-impl Notification {
-  pub fn task_state(&self) -> TaskState {
-    self
-      .state
-      .unwrap_or_else(|| TaskState::from_legacy(&self.kind, self.silenced))
-  }
-
-  /// Sets the state and its legacy mirrors together.
-  pub fn set_state(&mut self, state: TaskState) {
-    self.state = Some(state);
-    self.kind = state.legacy_kind().into();
-    self.silenced = matches!(
-      state,
-      TaskState::InputNeededIgnored | TaskState::DoneAcknowledged | TaskState::FailedAcknowledged
-    );
-  }
-}
-
-/// Global sound controls shared by every row. Per-row `silenced` flags feed the
-/// one shared loop; a snooze mutes that loop until a recorded wall-clock time.
+/// Global sound controls shared by every row. Alerting rows feed the one
+/// shared loop; a snooze mutes that loop until a recorded wall-clock time.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SoundState {
@@ -344,7 +297,7 @@ mod tests {
   #[test]
   fn legacy_and_partial_origins_are_valid() {
     let old: Notification =
-      serde_json::from_str(r#"{"id":"a","kind":"done","title":"t","message":"m"}"#).unwrap();
+      serde_json::from_str(r#"{"id":"a","state":"done","title":"t","message":"m"}"#).unwrap();
     assert!(old.origin.is_none());
     for json in [
       "{}",
@@ -402,47 +355,26 @@ mod tests {
   }
 
   #[test]
-  fn task_states_round_trip_and_legacy_rows_derive_a_state() {
+  fn task_states_serialize_as_snake_case_and_acknowledge_to_quiet_states() {
     let json = |state| serde_json::to_string(&state).unwrap();
     assert_eq!(
       json(TaskState::InputNeededIgnored),
       r#""input_needed_ignored""#
     );
     assert_eq!(json(TaskState::DoneAcknowledged), r#""done_acknowledged""#);
-    let legacy = |kind: &str, silenced: bool| {
-      serde_json::from_str::<Notification>(&format!(
-        r#"{{"id":"a","kind":"{kind}","silenced":{silenced},"title":"t","message":"m"}}"#
-      ))
-      .unwrap()
-      .task_state()
-    };
-    assert_eq!(legacy("awaiting_user_input", false), TaskState::InputNeeded);
-    assert_eq!(
-      legacy("awaiting_user_input", true),
-      TaskState::InputNeededIgnored
-    );
-    assert_eq!(
-      legacy("all_tasks_finished", true),
-      TaskState::DoneAcknowledged
-    );
-    assert_eq!(legacy("working", true), TaskState::Working);
-    let mut row: Notification =
-      serde_json::from_str(r#"{"id":"a","kind":"x","title":"t","message":"m"}"#).unwrap();
-    row.set_state(TaskState::FailedAcknowledged);
-    assert_eq!((row.kind.as_str(), row.silenced), ("task_failed", true));
-    assert_eq!(row.task_state(), TaskState::FailedAcknowledged);
     for state in [TaskState::InputNeeded, TaskState::Done, TaskState::Failed] {
       assert!(state.is_alerting());
       assert!(!state.acknowledged().unwrap().is_alerting());
     }
     assert_eq!(TaskState::Working.acknowledged(), None);
+    assert!(TaskState::InputNeededIgnored.is_waiting());
   }
 
   #[test]
   fn agent_is_optional_and_tolerates_newer_values() {
     let row = |extra: &str| {
       serde_json::from_str::<Notification>(&format!(
-        r#"{{"id":"a","kind":"done","title":"t","message":"m"{extra}}}"#
+        r#"{{"id":"a","state":"done","title":"t","message":"m"{extra}}}"#
       ))
       .unwrap()
       .agent

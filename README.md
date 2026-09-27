@@ -33,52 +33,50 @@ curl http://127.0.0.1:43110/state
 
 Press Ctrl+C to stop the server.
 
-Both POST endpoints require nonblank `title` (up to 200 characters) and `message`
-(up to 4,000 characters), and accept an optional `session_id` (nonblank, up to
-256 bytes, no control characters). They return `{id, session_id?, kind, title,
-message, silenced, origin?, context?}`. Each session has one row: updates replace only that
-session's status, get a fresh alert `id`, and turn its sound back on. Requests
-without `session_id` share a legacy unassigned row and never replace named sessions.
-Rows are ordered by most recent update. Focus hints are retained for a session
-when an update omits `origin`. Statuses live in memory until cleared or the server
-restarts; clearing a row does not block future updates from that session.
+Open **http://127.0.0.1:43110/** in a browser for the web interface: live tasks
+with Dismiss/Clear, the sound controls, and the full API reference. The tray
+app's **API ↗** link opens it, and each app button's tooltip names its REST call.
+
+The status endpoints (`/awaiting_user_input`, `/all_tasks_finished`,
+`/task_failed`) require nonblank `title` (up to 200 characters) and `message` (up
+to 4,000), and accept optional `session_id` (nonblank, up to 256 bytes, no
+control characters), `context`, `origin`, and `agent`. They return `{id,
+session_id?, state, title, message, context?, origin?, agent?}`. Each session has
+one row: an update replaces only that session's row with a fresh `id` and its new
+state. Requests without `session_id` share one unassigned row. Rows are ordered
+by most recent update and live in memory until cleared or the server restarts.
 
 - Every row has a `state`: `working` (busy, quiet), `input_needed`, `done`,
   `failed` (alerting), or the quiet `input_needed_ignored`, `done_acknowledged`,
-  `failed_acknowledged`. `kind`/`silenced` remain for older clients.
-- Every notification endpoint and `/working` accept an optional `agent`
-  (`claude_code` or `codex`); unrecognized values read back as `unknown`. A row
-  keeps its agent when an update omits it, and the app shows a small Claude or
-  Codex mark beside the task.
+  `failed_acknowledged`.
+- `agent` is `claude_code` or `codex` (unrecognized values read back as
+  `unknown`). A row keeps its agent when an update omits it, and the app shows a
+  small Claude or Codex mark beside the state.
 - `POST /working` marks a session busy (from a submitted prompt, or with
-  `only_if_waiting` after the user answers). `POST /task_failed` reports a turn
-  that ended on an error.
-- `POST /acknowledge/{id}` dismisses one alerting row. It stays listed in its quiet
-  state while other rows keep alerting.
+  `only_if_waiting` after the user answers).
+- `POST /acknowledge/{id}` (Dismiss) quiets one alerting row, which stays listed.
+  `POST /dismiss/{id}` (Clear) removes one row. Both return `{stopped: bool}`, and
+  stale IDs are harmless.
 - `GET /notifications` returns all rows, including quiet ones.
-- `POST /silence/{id}` is the legacy name for `/acknowledge/{id}`.
-- `POST /dismiss/{id}` clears only that entry. Both actions return `{stopped: bool}`;
-  stale IDs are harmless, even if the same session has posted a newer update.
-- `GET /notification` still returns the most recent row for older clients.
-- `GET /sound` returns `{snoozed_until, alerting}`; `snoozed_until` is an RFC 3339
-  UTC timestamp or `null`.
-- `POST /sound/silence` stops sound globally: every current row is silenced and
-  any snooze is cancelled. Rows stay listed; later updates sound again.
+- `GET /sound` returns `{snoozed_until, alerting}` (an RFC 3339 UTC timestamp or `null`).
+- `POST /sound/stop` quiets everything: every alerting row is acknowledged and any
+  snooze is cancelled. Rows stay listed; later updates sound again. The
+  `stop-sound` shell alias calls it.
 - `POST /sound/snooze` with `{"seconds": 60}` (1 to 86,400) mutes all sound until
-  that wall-clock time. Alerts arriving meanwhile stay quiet, then the shared loop
+  that wall-clock time. Alerts arriving meanwhile stay quiet, then the loop
   resumes. Snoozing again replaces the deadline; `POST /sound/resume` ends it early.
-- `GET /state` includes `notifications`, the legacy `notification` field,
-  `audio_notification_id`, `sound`, and desktop/audio status.
-- `POST /stop` (or legacy `GET /stop`) clears **all** entries, any snooze, and all audio.
+- `POST /stop` clears **all** rows, any snooze, and all audio. It is the web
+  interface's "Clear all tasks"; hooks never call it.
+- `GET /state` includes `notifications`, `audio_notification_id`, `sound`, and
+  desktop/audio status.
 
-One shared sound loop plays while any unsilenced entry remains. Pending questions
-use `alert_await_user_input_sound` and take priority over completions, which use
-`alert_done_sound`. Within each kind, the newest update wins. Clearing or silencing
-the audible entry resumes another outstanding alert; silencing another entry does
-not interrupt playback. A snooze records only its end time; the service compares it
-with the current time whenever state is read or changed (the tray app polls every
-400 ms), so no timer runs and sound resumes on the first poll after it elapses. Legacy sound-only loop endpoints remain available and
-clear the status list when explicitly invoked.
+One shared sound loop plays for the newest `input_needed` row, else `failed`,
+else `done`. Questions and failures use `alert_await_user_input_sound`;
+completions use `alert_done_sound`. Dismissing or clearing the audible row moves
+on to another outstanding alert; changes to other rows do not interrupt
+playback. A snooze records only its end time. The service compares it with the
+current time whenever state is read or changed (the tray app polls every 400 ms),
+so no timer runs and sound resumes on the first poll after it elapses.
 
 ## Optional session context
 
@@ -99,7 +97,7 @@ Both notification endpoints accept a `context` object. Every field is optional:
 }
 ```
 
-Context is returned by `/notification`, `/notifications`, and `/state`. For a
+Context is returned by `/notifications` and `/state`. For a
 named session, omitted or `null` fields retain their previous values; supplied
 strings update them, and an empty string clears a field. A new `cwd` clears old
 repo metadata unless replacements are also supplied. Unassigned entries do not
@@ -163,8 +161,8 @@ python3 scripts/install_hooks.py --claude --install  # Install with a backup
 This adds the same Stop, PermissionRequest, and PreToolUse (`AskUserQuestion`)
 hooks to **`~/.claude/settings.json`** (or `$CLAUDE_CONFIG_DIR`), preserving
 unrelated settings. It removes older `~/.claude/agent_notify*.sh` hooks: those
-called the sound-only `/loop_*` and `/stop` endpoints, which create no status row
-and clear every agent's row. Start a new Claude Code session afterwards. Stop rows
+called the now-removed sound-only `/loop_*` endpoints and `/stop`, which created
+no status row and cleared every agent's row. Start a new Claude Code session afterwards. Stop rows
 use Claude's final message (falling back to its transcript) and its latest prompt
 as the current task.
 
@@ -207,8 +205,9 @@ frontend is plain HTML/CSS/JavaScript bundled by Tauri; no Node build step is ne
   Available project/task context is compact; expand **Details** (or **View
   message**) for the full text. Only alerting rows open the window or mark the tray.
 - Sound is global. The bar above the status line has **Stop sound** (`POST
-  /sound/silence`, retaining every row), **Snooze 1 min**, and **Snooze 5 min**
-  (`POST /sound/snooze`), with a countdown while snoozed.
+  /sound/stop`, retaining every row), **Snooze 1 min**, and **Snooze 5 min**
+  (`POST /sound/snooze`), with a countdown while snoozed. The footer's **API ↗**
+  opens the web interface.
 - **×** calls `POST /dismiss/{id}` and removes only that row. The window stays open
   while other entries remain; clearing the last entry hides it.
 - **Hide to tray**, Escape, closing, or minimizing hides the window without

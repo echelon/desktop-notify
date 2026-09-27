@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('../ui/app.js', import.meta.url), 'utf8');
-const notification = (id = 'a', extra = {}) => ({ id, session_id: `session-${id}`, title: 'Task', message: 'Question?', kind: 'awaiting_user_input', origin: { terminal_app: 'ghostty' }, silenced: false, ...extra });
+const notification = (id = 'a', extra = {}) => ({ id, session_id: `session-${id}`, title: 'Task', message: 'Question?', state: 'input_needed', origin: { terminal_app: 'ghostty' }, ...extra });
 
 class Element {
   constructor(tag = 'div') { this.tagName = tag.toUpperCase(); this.className = ''; this.dataset = {}; this.children = []; this.handlers = {}; this.classList = { toggle() {} }; }
@@ -40,12 +40,12 @@ async function ui(alerts, invoke = async () => ({ target: 'application' }), soun
   return {
     element, calls,
     row: (id) => element('notifications').children.find((row) => row.dataset.id === id),
-    update: (notifications, connected = true, nextSound = sound) => update({ payload: { notifications, sound: nextSound, connected, error: null } }),
+    update: (notifications, connected = true, nextSound = sound) => update({ payload: { notifications, sound: nextSound, service: 'http://127.0.0.1:43110', connected, error: null } }),
   };
 }
 
 test('independent sessions show their own status and focus metadata', async () => {
-  const page = await ui([notification(), notification('b', { kind: 'all_tasks_finished', origin: null })]);
+  const page = await ui([notification(), notification('b', { state: 'done', origin: null })]);
   assert.equal(page.element('notifications').children.length, 2);
   assert.equal(page.row('a').find('kind').textContent, 'Input needed');
   assert.equal(page.row('b').find('kind').textContent, 'Finished');
@@ -64,9 +64,8 @@ test('Focus leaves all rows available for global sound stopping and clearing', a
   assert.equal(page.element('sound-controls').hidden, false);
   assert.equal(page.element('silence-all').disabled, false);
   await page.element('silence-all').handlers.click();
-  assert.deepEqual(page.calls.at(-1), ['silence_all_sound', undefined]);
-  page.update([notification('a', { silenced: true }), notification('b', { silenced: true })], true, { alerting: false });
-  // Legacy rows without `state` derive it from kind/silenced.
+  assert.deepEqual(page.calls.at(-1), ['stop_all_sound', undefined]);
+  page.update([notification('a', { state: 'input_needed_ignored' }), notification('b', { state: 'input_needed_ignored' })], true, { alerting: false });
   assert.equal(page.row('a').find('kind').textContent, 'Input needed · ignored');
   assert.equal(page.row('a').find('acknowledge').hidden, true);
   assert.equal(page.element('silence-all').disabled, true);
@@ -200,9 +199,9 @@ test('sound failures surface in the sound bar without touching rows', async () =
 test('each task shows its state and can be dismissed without affecting the others', async () => {
   const page = await ui([
     notification('a', { state: 'input_needed' }),
-    notification('b', { state: 'done', kind: 'all_tasks_finished' }),
-    notification('c', { state: 'working', kind: 'working' }),
-    notification('d', { state: 'failed', kind: 'task_failed' }),
+    notification('b', { state: 'done' }),
+    notification('c', { state: 'working' }),
+    notification('d', { state: 'failed' }),
   ]);
   const label = (id) => page.row(id).find('kind').textContent;
   assert.deepEqual(['a', 'b', 'c', 'd'].map(label), ['Input needed', 'Finished', 'Working', 'Failed']);
@@ -212,12 +211,12 @@ test('each task shows its state and can be dismissed without affecting the other
   assert.equal(page.row('b').find('acknowledge').hidden, false);
   await page.row('b').find('acknowledge').handlers.click();
   assert.equal(JSON.stringify(page.calls.at(-1)), '["acknowledge_notification",{"id":"b"}]');
-  assert.ok(!page.calls.some(([name]) => name === 'dismiss_notification' || name === 'silence_all_sound'));
+  assert.ok(!page.calls.some(([name]) => name === 'dismiss_notification' || name === 'stop_all_sound'));
   page.update([
     notification('a', { state: 'input_needed' }),
-    notification('b', { state: 'done_acknowledged', kind: 'all_tasks_finished', silenced: true }),
-    notification('c', { state: 'working', kind: 'working' }),
-    notification('d', { state: 'failed', kind: 'task_failed' }),
+    notification('b', { state: 'done_acknowledged' }),
+    notification('c', { state: 'working' }),
+    notification('d', { state: 'failed' }),
   ]);
   assert.equal(label('b'), 'Finished · seen');
   assert.equal(page.row('b').find('acknowledge').hidden, true);
@@ -254,4 +253,13 @@ test('rows show a small mark for the reporting agent, and none when unknown', as
   page.update([notification('a', { agent: 'codex' })]);
   assert.equal(icon('a').children[0].class, 'agent-mark codex');
   assert.equal(icon('a').children.length, 1);
+});
+
+test('the app documents its REST interface and opens the web interface', async () => {
+  const page = await ui([notification()]);
+  page.update([notification()], true, { alerting: true });
+  await page.element('api').handlers.click();
+  assert.equal(page.calls.at(-1)[0], 'open_web_interface');
+  assert.match(page.row('a').find('acknowledge').title, /POST \/acknowledge\/\{id\}/);
+  assert.match(page.row('a').find('clear').title, /POST \/dismiss\/\{id\}/);
 });

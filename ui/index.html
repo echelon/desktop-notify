@@ -23,13 +23,13 @@
     <div id="error" class="error" role="alert" hidden></div>
     <section id="sound-controls" class="sound-controls" aria-label="Sound for all agents" hidden>
       <div class="sound-buttons">
-        <button id="silence-all" class="sound-button stop" type="button" title="Stop sound for every current entry; entries stay listed">Stop sound</button>
-        <button id="snooze-1" class="sound-button" type="button" title="Mute all sound for 1 minute">Snooze 1 min</button>
-        <button id="snooze-5" class="sound-button" type="button" title="Mute all sound for 5 minutes">Snooze 5 min</button>
+        <button id="silence-all" class="sound-button stop" type="button" title="Stop sound for every current entry; entries stay listed&#10;POST /sound/stop">Stop sound</button>
+        <button id="snooze-1" class="sound-button" type="button" title="Mute all sound for 1 minute&#10;POST /sound/snooze {&quot;seconds&quot;: 60}">Snooze 1 min</button>
+        <button id="snooze-5" class="sound-button" type="button" title="Mute all sound for 5 minutes&#10;POST /sound/snooze {&quot;seconds&quot;: 300}">Snooze 5 min</button>
       </div>
       <p id="sound-status" class="sound-status" role="status" aria-live="polite"></p>
     </section>
-    <footer><span id="connection" class="connection">Connecting…</span><span class="footer-hint">Always on top · <kbd>esc</kbd> to hide</span></footer>
+    <footer><span id="connection" class="connection">Connecting…</span><button id="api" class="footer-link" type="button" title="Web interface and REST API reference">API ↗</button><span class="footer-hint">Always on top · <kbd>esc</kbd> to hide</span></footer>
     <div id="resize" aria-hidden="true"></div>
   </div>
   <script src="app.js"></script>

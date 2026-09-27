@@ -29,14 +29,12 @@ fn routes(cfg: &mut web::ServiceConfig) {
     .route("/awaiting_user_input", web::post().to(awaiting_user_input))
     .route("/all_tasks_finished", web::post().to(all_tasks_finished))
     .route("/dismiss/{id}", web::post().to(dismiss))
-    .route("/notification", web::get().to(current_notification))
     .route("/notifications", web::get().to(list_notifications))
     .route("/working", web::post().to(working))
     .route("/task_failed", web::post().to(task_failed))
     .route("/acknowledge/{id}", web::post().to(acknowledge))
-    .route("/silence/{id}", web::post().to(acknowledge))
     .route("/sound", web::get().to(sound))
-    .route("/sound/silence", web::post().to(silence_all))
+    .route("/sound/stop", web::post().to(stop_sound))
     .route("/sound/snooze", web::post().to(snooze))
     .route("/sound/resume", web::post().to(resume_sound))
     .route("/stop", web::post().to(stop_handler));
@@ -60,7 +58,12 @@ async fn notification_replacement_and_stale_dismissal_are_atomic() {
       test::call_and_read_body_json(&app, request).await;
     assert_eq!(response.title, "Work ✓");
     assert_eq!(response.message, "A question or outcome.");
-    assert_eq!(response.kind, endpoint);
+    let expected_state = if endpoint == "awaiting_user_input" {
+      TaskState::InputNeeded
+    } else {
+      TaskState::Done
+    };
+    assert_eq!(response.state, expected_state);
     assert!(response.origin.is_none());
     ids.push(response.id);
     match commands.try_recv().unwrap() {
@@ -213,12 +216,12 @@ async fn optional_origins_round_trip_through_both_endpoints_and_polling() {
         .to_request();
       let created: crate::notifications::Notification =
         test::call_and_read_body_json(&app, request).await;
-      let polled: crate::notifications::Notification = test::call_and_read_body_json(
+      let polled: Vec<crate::notifications::Notification> = test::call_and_read_body_json(
         &app,
-        test::TestRequest::get().uri("/notification").to_request(),
+        test::TestRequest::get().uri("/notifications").to_request(),
       )
       .await;
-      assert_eq!(polled, created);
+      assert_eq!(polled[0], created);
       if origin != "null" {
         assert!(created.origin.is_some());
       }
@@ -313,7 +316,7 @@ async fn sessions_update_silence_and_clear_independently() {
   let muted: serde_json::Value = test::call_and_read_body_json(
     &app,
     test::TestRequest::post()
-      .uri(&format!("/silence/{}", a.id))
+      .uri(&format!("/acknowledge/{}", a.id))
       .to_request(),
   )
   .await;
@@ -323,7 +326,7 @@ async fn sessions_update_silence_and_clear_independently() {
     AudioCommand::StopAll
   ));
   let row = state.notifications.lock().unwrap().active[0].clone();
-  assert!(row.silenced);
+  assert_eq!(row.state, TaskState::InputNeededIgnored);
   assert_eq!(row.origin, a.origin);
 
   // Another session and the legacy slot coexist with this silenced row.
@@ -349,11 +352,11 @@ async fn sessions_update_silence_and_clear_independently() {
       .set_json(serde_json::json!({"session_id": "agent-a", "title": "New question", "message": "Which option?"})).to_request(),
   ).await;
   assert_eq!(replacement.origin, a.origin);
-  assert!(!replacement.silenced);
+  assert!(replacement.state.is_alerting());
   assert_ne!(replacement.id, a.id);
   assert_eq!(state.notifications.lock().unwrap().active[1..], others);
   assert!(matches!(commands.try_recv().unwrap(), AudioCommand::PlayLoop(s) if s.name == "await"));
-  for action in ["dismiss", "silence"] {
+  for action in ["dismiss", "acknowledge"] {
     let stale: serde_json::Value = test::call_and_read_body_json(
       &app,
       test::TestRequest::post()
@@ -544,7 +547,7 @@ async fn global_stop_sound_silences_every_row_until_a_fresh_update() {
   test::call_service(&app, alert_request("all_tasks_finished", "b").to_request()).await;
   while commands.try_recv().is_ok() {}
 
-  let silence = test::TestRequest::post().uri("/sound/silence").to_request();
+  let silence = test::TestRequest::post().uri("/sound/stop").to_request();
   let response: SoundState = test::call_and_read_body_json(&app, silence).await;
   assert_eq!(response, SoundState::default());
   assert!(matches!(
@@ -555,13 +558,13 @@ async fn global_stop_sound_silences_every_row_until_a_fresh_update() {
   {
     let current = state.notifications.lock().unwrap();
     assert_eq!(current.active.len(), 2);
-    assert!(current.active.iter().all(|n| n.silenced));
+    assert!(current.active.iter().all(|n| !n.state.is_alerting()));
   }
 
   // A later update is a new alert and joins the shared loop again.
   let update = alert_request("all_tasks_finished", "a").to_request();
   let fresh: Notification = test::call_and_read_body_json(&app, update).await;
-  assert!(!fresh.silenced);
+  assert!(fresh.state.is_alerting());
   assert!(matches!(
     commands.try_recv().unwrap(),
     AudioCommand::PlayLoop(spec) if spec.name == "done"
@@ -597,11 +600,11 @@ async fn snooze_mutes_new_alerts_and_resumes_after_its_wall_clock_deadline() {
     AudioCommand::StopAll
   ));
 
-  // Alerts during the snooze are recorded, unsilenced, and stay quiet; polling
+  // Alerts during the snooze are recorded as alerting and stay quiet; polling
   // before the deadline leaves the loop stopped.
   let update = alert_request("awaiting_user_input", "b").to_request();
   let question: Notification = test::call_and_read_body_json(&app, update).await;
-  assert!(!question.silenced);
+  assert!(question.state.is_alerting());
   let poll = test::TestRequest::get().uri("/notifications").to_request();
   assert_eq!(
     test::call_service(&app, poll).await.status(),
@@ -676,7 +679,7 @@ fn row_state(state: &web::Data<ServerState>, session: &str) -> Option<TaskState>
     .active
     .iter()
     .find(|n| n.session_id.as_deref() == Some(session))
-    .map(|n| n.task_state())
+    .map(|n| n.state)
 }
 
 #[actix_web::test]
@@ -691,11 +694,8 @@ async fn dismissing_one_task_leaves_the_others_alerting() {
       .await;
   let failure: Notification =
     test::call_and_read_body_json(&app, alert_request("task_failed", "c").to_request()).await;
-  assert_eq!(done.state, Some(TaskState::Done));
-  assert_eq!(
-    (failure.state, failure.kind.as_str()),
-    (Some(TaskState::Failed), "task_failed")
-  );
+  assert_eq!(done.state, TaskState::Done);
+  assert_eq!(failure.state, TaskState::Failed);
   while commands.try_recv().is_ok() {}
 
   // Acknowledging the audible question falls back to the failure's await loop.
@@ -731,11 +731,11 @@ async fn dismissing_one_task_leaves_the_others_alerting() {
   assert!(commands.try_recv().is_err());
   assert_eq!(state.notifications.lock().unwrap().active.len(), 3);
 
-  // The legacy /silence alias and global Stop sound acknowledge too.
-  let silence = test::TestRequest::post()
-    .uri(&format!("/silence/{}", done.id))
+  // Acknowledging the last alerting row stops the loop.
+  let ack = test::TestRequest::post()
+    .uri(&format!("/acknowledge/{}", done.id))
     .to_request();
-  test::call_service(&app, silence).await;
+  test::call_service(&app, ack).await;
   assert_eq!(row_state(&state, "a"), Some(TaskState::DoneAcknowledged));
   assert!(matches!(
     commands.try_recv().unwrap(),

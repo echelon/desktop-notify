@@ -78,7 +78,7 @@ def run(restart=False):
             assert pid != previous_pid
         a, b = [session_notification(session) for session in sessions]
         assert a and b and a["id"] != b["id"]
-        assert a["kind"] == b["kind"] == "all_tasks_finished"
+        assert a["state"] == b["state"] == "done"
         assert a["context"]["repo_name"] == "Smoke test"
         assert a["context"]["cwd"] == done["cwd"]
         assert a["context"]["current_ask"] == "Check two sessions"
@@ -95,7 +95,7 @@ def run(restart=False):
         ]:
             invoke({**event, "cwd": "/tmp/hook-smoke-test", "session_id": sessions[0]})
             current = session_notification(sessions[0])
-            assert current["kind"] == "awaiting_user_input"
+            assert current["state"] == "input_needed"
             assert session_notification(sessions[1]) == b
             assert current["context"]["work_arc"] == "Verify independent agent notifications"
             eventually(lambda: hook.http("/state")["audio"]["loop_name"] == "await")
@@ -103,20 +103,20 @@ def run(restart=False):
         print("PASS questions and approvals update only their own session", flush=True)
 
         assert hook.http("/dismiss/" + a["id"], {}) == {"stopped": False}
-        assert hook.http("/silence/" + a["id"], {}) == {"stopped": False}
+        assert hook.http("/acknowledge/" + a["id"], {}) == {"stopped": False}
         assert session_notification(sessions[0])["id"] == current["id"]
-        assert hook.http("/silence/" + current["id"], {}) == {"stopped": True}
-        assert session_notification(sessions[0])["silenced"]
+        assert hook.http("/acknowledge/" + current["id"], {}) == {"stopped": True}
+        assert session_notification(sessions[0])["state"].endswith(("_acknowledged", "_ignored"))
         assert session_notification(sessions[1]) == b
         assert hook.http("/dismiss/" + b["id"], {}) == {"stopped": True}
         assert session_notification(sessions[0])["id"] == current["id"]
         assert session_notification(sessions[1]) is None
-        print("PASS stale actions are harmless; silence retains status; clear removes only its row", flush=True)
+        print("PASS stale actions are harmless; dismiss retains status; clear removes only its row", flush=True)
 
         # A later completion on A reuses its row and re-arms its sound.
         invoke({**done, "session_id": sessions[0]})
         updated = session_notification(sessions[0])
-        assert updated["kind"] == "all_tasks_finished" and not updated["silenced"]
+        assert updated["state"] == "done"
         assert updated["id"] != current["id"]
         eventually(lambda: updated["id"] in hook.http("/state")["desktop"].get("displayed_ids", []))
         print("PASS new update re-arms the session and reaches the running desktop app", flush=True)

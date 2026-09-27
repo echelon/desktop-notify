@@ -12,7 +12,6 @@ pub async fn state_handler(state: web::Data<ServerState>) -> impl Responder {
   let resp = StateResponse {
     audio: state.audio.status(),
     config: ConfigSummary::from_state(&state),
-    notification: current.active.first().cloned(),
     notifications: current.active.clone(),
     audio_notification_id: current.audio_id.clone(),
     sound: sound_state(&current),
@@ -24,7 +23,6 @@ pub async fn state_handler(state: web::Data<ServerState>) -> impl Responder {
 
 #[derive(Serialize)]
 struct StateResponse {
-  notification: Option<crate::notifications::Notification>,
   notifications: Vec<crate::notifications::Notification>,
   audio_notification_id: Option<String>,
   sound: notify_types::SoundState,
@@ -36,10 +34,8 @@ struct StateResponse {
 
 #[derive(Serialize)]
 struct ConfigSummary {
-  alert_beep_sound: Option<PathBuf>,
   alert_done_sound: Option<PathBuf>,
   alert_await_user_input_sound: Option<PathBuf>,
-  extra_alert_beep_count: usize,
   extra_alert_done_count: usize,
   extra_alert_await_count: usize,
   gap_schedule_millis: [u64; 4],
@@ -51,10 +47,8 @@ impl ConfigSummary {
   fn from_state(state: &ServerState) -> Self {
     let c = &state.config;
     Self {
-      alert_beep_sound: c.alert_beep_sound.clone(),
       alert_done_sound: c.alert_done_sound.clone(),
       alert_await_user_input_sound: c.alert_await_user_input_sound.clone(),
-      extra_alert_beep_count: c.extra_alert_beep_sounds.len(),
       extra_alert_done_count: c.extra_alert_done_sounds.len(),
       extra_alert_await_count: c.extra_alert_await_sounds.len(),
       gap_schedule_millis: c.loop_gap_schedule_millis(),

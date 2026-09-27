@@ -20,13 +20,7 @@ const STATES = {
   failed: { label: 'Failed', alerting: true },
   failed_acknowledged: { label: 'Failed · seen', alerting: false },
 };
-// Rows from an older service carry only kind/silenced.
-function taskState(alert) {
-  if (STATES[alert.state]) return alert.state;
-  if (alert.kind === 'working') return 'working';
-  const base = { awaiting_user_input: 'input_needed', task_failed: 'failed' }[alert.kind] || 'done';
-  return alert.silenced ? { input_needed: 'input_needed_ignored', failed: 'failed_acknowledged', done: 'done_acknowledged' }[base] : base;
-}
+const taskState = (alert) => (STATES[alert.state] ? alert.state : 'done');
 
 // Small agent marks, drawn from fixed geometry (never from row data).
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -88,11 +82,11 @@ function createRow(alert) {
   const focus = element('button', 'secondary focus', 'Focus');
   focus.addEventListener('click', () => focusTerminal(alert.id));
   const acknowledge = element('button', 'secondary acknowledge', 'Dismiss');
-  acknowledge.title = 'Stop alerting for this task; keep it listed. Other tasks keep alerting.';
+  acknowledge.title = 'Stop alerting for this task; keep it listed. Other tasks keep alerting.\nPOST /acknowledge/{id}';
   acknowledge.setAttribute('aria-label', `Dismiss ${alert.title}`);
   acknowledge.addEventListener('click', () => updateNotification(alert.id, 'acknowledge_notification'));
   const clear = element('button', 'icon-button clear', '×');
-  clear.title = 'Clear this entry and its sound';
+  clear.title = 'Clear this entry and its sound\nPOST /dismiss/{id}';
   clear.setAttribute('aria-label', `Clear ${alert.title}`);
   clear.addEventListener('click', () => updateNotification(alert.id, 'dismiss_notification'));
   controls.append(focus, acknowledge, clear);
@@ -164,6 +158,7 @@ function render(next) {
   byId('notifications').hidden = alerts.length === 0;
   byId('count').textContent = alerts.length ? String(alerts.length) : '';
   byId('connection').textContent = next.connected ? 'Connected' : 'Service offline';
+  if (next.service) byId('api').title = `Web interface and REST API reference\n${next.service}/`;
   byId('connection').classList.toggle('online', next.connected);
   byId('error').hidden = !next.error;
   byId('error').textContent = next.error || '';
@@ -171,7 +166,6 @@ function render(next) {
     if (!rows.has(alert.id)) rows.set(alert.id, createRow(alert));
     const refs = rows.get(alert.id);
     const state = taskState(alert);
-    refs.row.dataset.kind = alert.kind;
     refs.row.dataset.state = state;
     refs.row.classList.toggle('quiet', !STATES[state].alerting);
     refs.kind.textContent = STATES[state].label;
@@ -273,9 +267,10 @@ async function updateNotification(id, command) {
   }
 }
 
-byId('silence-all').addEventListener('click', () => updateSound('silence_all_sound'));
+byId('silence-all').addEventListener('click', () => updateSound('stop_all_sound'));
 byId('snooze-1').addEventListener('click', () => updateSound('snooze_sound', { seconds: 60 }));
 byId('snooze-5').addEventListener('click', () => updateSound('snooze_sound', { seconds: 300 }));
+byId('api').addEventListener('click', () => invoke('open_web_interface').catch((error) => { soundError = String(error); renderSound(); }));
 // Refreshes only the countdown text; resuming is decided by the service.
 setInterval(renderSound, 1000);
 byId('hide').addEventListener('click', () => invoke('hide_window'));

@@ -39,99 +39,235 @@ README and `crates/agent_notify_server/static/index.html` describe the API.
 - Explain concurrency, compatibility, and platform constraints in comments.
   Keep macOS APIs behind `cfg(target_os = "macos")`.
 
-## Behavior learned while building
+## Invariants learned while building
 
-- Independent Codex sessions must remain independent, even in the same directory.
-  A session ID identifies a row; a fresh notification ID identifies each update.
-  Stale row actions must never affect a replacement or another session.
-- Each row has a `TaskState` (`notify-types`): `working` (busy),
-  `input_needed`/`done`/`failed` (alerting), and their quiet counterparts
-  `input_needed_ignored`/`done_acknowledged`/`failed_acknowledged`. Only
-  alerting rows feed the sound loop, open the window, or mark the tray. `kind`
-  and `silenced` are legacy mirrors kept in sync by `Notification::set_state`.
-- Focus, Dismiss, Stop sound, Clear, and Hide have separate meanings. Focus leaves
-  the row and sound intact. Dismiss acknowledges one row, leaving others alerting.
-  Stop sound acknowledges every alerting row. Clear removes that row. Hide only
-  changes window visibility. `/stop` intentionally clears everything.
-- Snooze mutes all sound until a recorded wall-clock deadline (chrono
-  `DateTime<Utc>`), checked against the current time on requests; never a timer.
-- Pending questions have sound priority over completions. Preserve one shared
-  audio loop and do not restart it for unrelated row changes.
+- Independent agent sessions must remain independent, even in the same
+  directory. A session ID identifies a row; a fresh notification ID identifies
+  each update. Stale row actions must never affect a replacement or another session.
+- Focus, Dismiss, Stop sound, Clear, and Hide have separate meanings (see
+  Features). `/stop` intentionally clears everything.
+- One shared audio loop. Do not restart it for unrelated row changes. Snooze is a
+  recorded wall-clock deadline (chrono `DateTime<Utc>`), never a timer.
 - The persistent, always-on-top Tauri tray window replaced the Swift/Notification
   Center experiment. Preserve tray recall, all-Spaces/full-screen visibility,
   and reconnection after service restarts.
 - Treat notification text and focus hints as data: render text literally and pass
   process arguments separately. Never interpolate them into executable code.
 - Preserve legacy endpoints and optional-field compatibility when extending the
-  API. Update producers, shared types, consumers, tests, and API docs together.
+  API. Update producers, shared types, consumers, tests, and API docs together
+  (including the web interface at `GET /`). Before removing an endpoint, check
+  every caller: both agents' hooks, the app, the web interface, and the user's
+  shell aliases.
 
-## Connecting an agent to the server
+## Task states
 
-### Setup
+Every row has one `TaskState` (`crates/notify_types`, serialized snake_case).
+Only **alerting** states feed the sound loop, open the window, and set the tray
+dot. The row's `state` field is its only status.
 
-Agents talk to the server only through `scripts/codex_hook.py`. Install it with
-the installer, never by hand, then start a **new** agent session (running
-sessions keep the hook definitions they started with):
+| State | Alerting | Entered by | Dismiss moves it to |
+| --- | --- | --- | --- |
+| `working` | no, busy | `POST /working` (prompt submitted, or resumed after input) | — |
+| `input_needed` | **yes**, await sound | `POST /awaiting_user_input` (question, permission request) | `input_needed_ignored` |
+| `input_needed_ignored` | no, still waiting | Dismiss or Stop sound on `input_needed` | — |
+| `done` | **yes**, done sound | `POST /all_tasks_finished` (turn finished) | `done_acknowledged` |
+| `done_acknowledged` | no, terminal | Dismiss or Stop sound on `done` | — |
+| `failed` | **yes**, await sound | `POST /task_failed` (turn ended on an error) | `failed_acknowledged` |
+| `failed_acknowledged` | no, terminal | Dismiss or Stop sound on `failed` | — |
 
-```sh
-python3 scripts/install_hooks.py --install           # Codex: ~/.codex/hooks.json + trust hashes
-python3 scripts/install_hooks.py --claude --install  # Claude Code: ~/.claude/settings.json
-```
+Sound priority is the newest `input_needed`, then the newest `failed`, then the
+newest `done`. A new agent update to a session replaces its row with a fresh
+ID, whatever the previous state. Candidate future states (not implemented): an
+`ended` state when the agent's PID exits without Stop, and a stale-`working`
+marker.
 
-Omit `--install` to preview. Both write backups and preserve unrelated hooks and
-settings, and both register the same three hooks with the same command
-(`<python> <repo>/scripts/codex_hook.py`), all synchronous. Alert events use a
-720 s timeout so a cold build/start can finish. `UserPromptSubmit` (30 s) and
-`PostToolUse` (10 s) never start the service and are skipped on services older
-than API 4. PostToolUse sends only `{session_id, only_if_waiting, tool_use_id}`,
-without discovery, to stay fast. It must stay synchronous: an asynchronous
-completion could land after a newer question and cancel it. The server resumes a
-waiting row only when the finished `tool_use_id` matches the one it waits on (or
-either is unknown), so a parallel tool cannot cancel another tool's prompt.
+## HTTP API (current, API version 4)
 
-| Agent event | Endpoint | Row kind |
+Local JSON over HTTP at `http://127.0.0.1:43110` (`HTTP_BIND_ADDRESS` overrides).
+Invalid input returns 400 with a plain-text reason and leaves state unchanged.
+A missing configured sound returns 503.
+
+**Reporting status** (used by hooks):
+
+| Endpoint | Body | Effect |
+| --- | --- | --- |
+| `POST /awaiting_user_input` | `{title, message, session_id?, context?, origin?, agent?, tool_use_id?}` | Row becomes `input_needed`. `tool_use_id` names the tool call it waits on. |
+| `POST /all_tasks_finished` | `{title, message, session_id?, context?, origin?, agent?}` | Row becomes `done`. |
+| `POST /task_failed` | same as above | Row becomes `failed`. |
+| `POST /working` | `{session_id, title?, message?, context?, origin?, agent?, only_if_waiting?, tool_use_id?}` | Row becomes `working` and returns `{updated, notification?}`. With `only_if_waiting`, it only resumes an `input_needed*` row waiting on the same `tool_use_id` (or either is unknown), and never creates a row or revives a finished one. Missing title/message keep the row's text. |
+
+These return the row: `{id, session_id?, state, title, message, context?,
+origin?, agent?}`. Limits: title 1–200 characters, message 1–4000,
+`session_id` and `tool_use_id` 1–256 bytes with no control characters. Rows are
+keyed by `session_id`; omitted IDs share one legacy "unassigned" row. Named
+sessions keep `context`, `origin`, and `agent` when an update omits them.
+`context` fields (`cwd`, `work_arc`, `current_ask`, `repo_name`,
+`repo_description`) merge: omitted means unchanged, and a blank string clears.
+`agent` is `claude_code` or `codex`; other values read back as `unknown`.
+`origin` fields are listed under Focus below.
+
+**Acting on rows** (used by the app):
+
+| Endpoint | Effect |
+| --- | --- |
+| `POST /acknowledge/{id}` | Dismiss: an alerting row moves to its quiet state and stays listed. Returns `{stopped}`; stale or already-quiet IDs return `false`. |
+| `POST /dismiss/{id}` | Clear: remove that row. Returns `{stopped}`; stale IDs are harmless. |
+| `POST /stop` | Clear every row, cancel any snooze, and stop all audio (`GET` also accepted). Hooks must never call it. |
+
+**Global sound** (used by the app's sound bar):
+
+| Endpoint | Effect |
+| --- | --- |
+| `GET /sound` | `{snoozed_until, alerting}`; `snoozed_until` is RFC 3339 UTC or null. |
+| `POST /sound/stop` | Stop sound: acknowledge every alerting row and cancel any snooze. Rows stay. |
+| `POST /sound/snooze` | `{seconds}` (1–86400): mute until now + seconds. Replaces an earlier snooze. |
+| `POST /sound/resume` | End a snooze early. |
+
+**Reading and service** (reads never change playback, except that noticing an
+elapsed snooze resumes sound):
+
+| Endpoint | Returns |
+| --- | --- |
+| `GET /notifications` | All rows, newest update first, including quiet ones. The app polls it every 400 ms. |
+| `GET /state` | `{notifications, audio_notification_id, sound, desktop, desktop_connected, audio, config}`. |
+| `GET /health` | `{service: "desktop-notify", api_version: 4, pid}`. Hooks check it before posting. |
+| `POST /desktop/status` | App heartbeat `{presentation, window_visible, pid, displayed_id, displayed_ids, error}`. |
+| `GET /` | **Permanent.** The web interface (`crates/agent_notify_server/static/index.html`): live tasks with Dismiss/Clear, sound controls (Stop, Snooze, Resume, Clear all), and this API reference. |
+
+**Who calls what** (C = Claude Code hook, X = Codex hook, A = Tauri app,
+W = web interface at `GET /`, S = `stop-sound` shell alias in
+`~/.config/shell/aliases/20-shortcuts.sh`):
+
+| Endpoint | Callers |
+| --- | --- |
+| `GET /health` | C, X |
+| `GET /state` | C, X (checks the app is connected before reopening it) |
+| `POST /awaiting_user_input`, `/all_tasks_finished`, `/working` | C, X |
+| `POST /task_failed` | C (StopFailure) |
+| `GET /notifications`, `GET /sound` | A, W (polling) |
+| `POST /acknowledge/{id}`, `/dismiss/{id}`, `/sound/snooze` | A, W (buttons) |
+| `POST /sound/stop` | A, W, S (`curl -fsS -m 1 -X POST http://127.0.0.1:43110/sound/stop`) |
+| `POST /sound/resume` | W |
+| `POST /stop` | W ("Clear all tasks") |
+| `GET /stop` | shells still holding the old `stop-sound` alias |
+| `POST /desktop/status` | A (heartbeat) |
+| `GET /` | you, in a browser; the app's **API ↗** link opens it |
+
+API 4 added task states, `/working`, `/task_failed`, `/acknowledge`, and `agent`.
+Hooks skip or adapt new calls on older services (`codex_hook.compatible`).
+
+## Permanent, retained, and removed API
+
+- **Permanent:** `GET /` is the web interface for managing tasks, alerts, and
+  sound, and the live API reference. Never remove it; keep it in sync with the API.
+- **Retained:** `GET /stop` only serves shells that still hold the old
+  `stop-sound` alias (which now uses `POST /sound/stop`). Remove it once no such
+  shells remain. `POST /stop` is the web interface's "Clear all tasks".
+- **Removed** (API 4, after confirming no hook, app, alias, or Codex config
+  called them): the sound-only `GET /alert_beep|alert_done|alert_await` and
+  `GET /loop_beep|loop_done|loop_await` endpoints (the loops cleared every row),
+  `GET /notification` (use `/notifications`), `POST /silence/{id}` (use
+  `/acknowledge/{id}`), `POST /sound/silence` (renamed `/sound/stop`), the row
+  fields `kind`/`silenced` (use `state`), `/state`'s `notification` field, the
+  `alert_beep_sound`/`extra_alert_beep_sounds` config, and the audio engine's
+  one-shot sink. Do not reintroduce them.
+
+## Hooks: how agents report status
+
+### Design
+
+Agents never call the API directly. Codex and Claude Code run a **hook
+command** on lifecycle events. The command is the same script for both,
+`scripts/codex_hook.py --agent <codex|claude_code>`. It reads the event JSON on
+stdin (both agents use the same field names), decides the endpoint, adds
+context and origin, and posts to the API. It always prints `{}` (or a
+`systemMessage` on failure) and never grants, denies, or blocks anything.
+
+| Agent event | Endpoint | Resulting state |
 | --- | --- | --- |
 | UserPromptSubmit | `/working` with the prompt as title/message | `working` |
 | PermissionRequest | `/awaiting_user_input` (+ `tool_use_id`) | `input_needed` |
 | PreToolUse matching `(^\|.*[._])(request_user_input(_async)?\|AskUserQuestion)$` | `/awaiting_user_input` (+ `tool_use_id`) | `input_needed` |
 | PostToolUse (every tool) | `/working` with `only_if_waiting` (+ `tool_use_id`) | `input_needed*` → `working`, else no change |
 | Stop (turn finished) | `/all_tasks_finished`, or `/awaiting_user_input` only if the message's closing paragraph asks a question or requests input | `done` / `input_needed` |
-| StopFailure (Claude Code only) | `/task_failed` | `failed` |
+| StopFailure (Claude Code only; Codex has no such event) | `/task_failed` | `failed` |
 
-A finished turn is `done` even when work continues in the background. Report the
-background result as a new status when it completes, and never leave a row
-`input_needed` unless the user must act. Put any real question in the closing
-paragraph, because the Stop classification reads only that paragraph.
+Principles:
 
-Never wire an agent to the legacy sound-only endpoints (`/loop_*`, `/alert_*`) or
-call `/stop` from a hook. They create no row, and `/stop` or `/loop_*` clear
-**every** session's row. The Claude installer removes old
-`~/.claude/agent_notify*.sh` hooks that did this. Editing `scripts/*.py` needs no
-reinstall because hooks load the script on each run. Changing the Rust wire types
-(`notify-types`) does need `python3 scripts/build.py` and a service restart: the
-server rejects unknown origin fields, so an old server returns 400 for new hooks.
-A restart discards in-memory rows, so re-post any pending ones.
+- **Alerts start the service** (build and launch if needed, under a lock so
+  concurrent hooks start one), with a 720 s timeout. **Busy updates never do.**
+  UserPromptSubmit (30 s) and PostToolUse (10 s) skip silently if the service is
+  down or older than API 4, so they never block a prompt or tool.
+- **PostToolUse is minimal and synchronous.** It sends only
+  `{session_id, only_if_waiting, tool_use_id}`, without discovery, in about 65 ms.
+  An asynchronous call could land after a newer question and cancel it. Matching
+  `tool_use_id` stops a parallel tool from cancelling another tool's prompt.
+- **A finished turn is `done`**, even when work continues in the background.
+  Report the background result as a new status when it completes. Put any real
+  question in the closing paragraph, because Stop classification reads only that.
+- **Agent identity is self-reported.** The installer writes `--agent <name>` into
+  each agent's command. The fallbacks are `NOTIFY_AGENT`, then the agent's
+  environment (`CLAUDECODE`, `AI_AGENT`, `CODEX_THREAD_ID`), then the transcript
+  location.
+- **What a hook sends:** `session_id` from the event. `message` is Stop's
+  `last_assistant_message`; if Claude omits it, the hook uses the newest assistant
+  text in `transcript_path`. `context` comes from `notification_context.py`: cwd,
+  repo metadata from manifests or README, and `current_ask` from the latest real
+  prompt in either transcript format. `origin` comes from `notification_origin.py`
+  (see Focus). Context and origin are best-effort; their failure never
+  suppresses the alert.
 
-### What a hook sends
+### Setup
 
-`codex_hook.py` reads the hook JSON on stdin (Codex and Claude Code use the same
-field names) and posts `{title, message, session_id, context, origin}`:
+Install with the installer, never by hand, then start **new** agent sessions
+(running sessions keep the hook definitions they started with):
 
-- `session_id` comes from the event and identifies the row, one per agent session.
-- `agent` (`claude_code`/`codex`) is self-reported: the installer writes
-  `--agent <name>` into each agent's hook command. Otherwise the hook falls back
-  to `NOTIFY_AGENT`, then the agent's own environment (`CLAUDECODE`, `AI_AGENT`,
-  `CODEX_THREAD_ID`), then the transcript location. Direct API callers set `agent`
-  in the JSON body. Rows keep their agent when an update omits it.
-- `message`: the event's `last_assistant_message` for Stop. Claude Code may omit
-  it, in which case the hook uses the newest assistant text in `transcript_path`.
-- `context` (`notification_context.py`) holds the cwd, repo name/description
-  from manifests or README, and `current_ask`, taken from the latest real user
-  prompt in either transcript format.
-- `origin` (`notification_origin.py`) holds focus hints, described below. Context
-  and origin are best-effort; their failure never suppresses the alert.
+```sh
+python3 scripts/install_hooks.py --install           # Codex: ~/.codex/hooks.json + trust hashes
+python3 scripts/install_hooks.py --claude --install  # Claude Code: ~/.claude/settings.json
+```
 
-### How Focus finds the exact terminal
+Omit `--install` to preview. Both back up and preserve unrelated hooks and
+settings, replace earlier versions of this hook in place, and remove old
+`~/.claude/agent_notify*.sh` hooks that called the removed endpoints. Codex
+installation also registers the exact definitions' trust hashes through Codex's
+config API and verifies them (`--verify`). Editing `scripts/*.py` needs no
+reinstall, because hooks load the script on each run. Changing wire types
+(`notify-types`) needs `python3 scripts/build.py` and a service restart, because
+the server rejects unknown fields. A restart discards in-memory rows, so re-post
+any pending ones.
+
+## Features
+
+- **Rows:** one per session, newest first, showing the state label, the agent
+  mark (orange Claude Code mascot or Codex spiral, beside the state), project
+  (repo name, else cwd basename), short session ID, title, and a one-line current
+  task. Details expand to the full message and context. Text is rendered literally.
+- **Row buttons:** **Focus** returns to the agent's terminal and changes nothing
+  else. **Dismiss** (alerting rows only) acknowledges that row; others keep
+  alerting. **×** (Clear) removes the row.
+- **Web interface** (`GET /`): the same tasks and sound controls in a browser,
+  plus Clear all, Resume, the REST reference, curl examples, and a "last request"
+  line showing the exact call each button made.
+- **Self-documenting app:** each tray-app button's tooltip names its REST call,
+  and the footer's **API ↗** opens the web interface.
+- **Sound bar:** **Stop sound** acknowledges every alerting row. **Snooze 1/5 min**
+  mutes all sound until a recorded wall-clock time. The service compares it with
+  the clock whenever the app polls, and resumes the loop after it passes. A
+  countdown shows while snoozed.
+- **Sound:** one shared loop that escalates over time (`config/notify_config.yaml`
+  gap, jitter, and escalation schedules). Questions and failures use the await
+  sound; finished turns use the done sound.
+- **Window and tray:** a frameless, always-on-top window on every Space and over
+  full-screen apps. Only new alerting rows open it. Clearing the last row hides
+  it. Hide, Escape, and closing send it to the tray, which recalls it. The tray
+  dot and tooltip count tasks needing attention. The app reconnects after service
+  restarts and keeps its last snapshot while offline.
+- **Logs:** `target/hook-events.jsonl` (rolling, one line per hook decision) and
+  `target/desktop-notify.log` (service log with state transitions, rotated at
+  5 MB). See troubleshooting.
+
+### Focus: finding the exact terminal
 
 Capture happens in the hook, at alert time:
 
@@ -178,7 +314,13 @@ when the row's Focus button is clicked:
 Rows captured before a capture improvement keep their old, weaker origin. They
 become exact at the session's next hook event.
 
-### Checking and troubleshooting
+`origin` fields: `terminal_app`, `app_pid`, `pid`, `terminal_id`, `tab_id`,
+`window_id`, `window_title`, `tty`, `tmux_socket`, `tmux_pane`, `tmux_client`,
+`tmux_server_pid`, `tmux_session`, `tmux_session_name`, `tmux_window`,
+`tmux_window_index`, `tmux_window_name`. All are optional and validated in
+`Origin::validate`.
+
+## Checking and troubleshooting
 
 - **Check a hook:** pipe a Stop event into the installed command, then inspect
   the row's `origin`:

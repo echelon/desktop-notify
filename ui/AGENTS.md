@@ -26,8 +26,10 @@ Use two-space JavaScript indentation and follow the existing CSS style/tokens.
   alerting rows and acknowledges that row alone. Stop sound and Snooze are global
   controls in the bar above the footer; they retain every row. Clear (×) removes
   only its row. Hide and keyboard shortcuts only hide the window.
-- Label rows by `state` (derive it from `kind`/`silenced` for older services);
-  quiet rows are dimmed and `working` shows a pulse, which honors reduced motion.
+- Label rows by `state`; quiet rows are dimmed and `working` shows a pulse, which
+  honors reduced motion.
+- Stay self-documenting: each action's tooltip names its REST call, and the
+  footer's API link (`open_web_interface`) opens the service's web interface.
 - The service owns the snooze deadline. The UI only compares it with `Date.now()`
   for the countdown; never resume or re-snooze from a UI timer.
 - Disable Focus when usable origin hints are absent. Reflect pending operations

@@ -99,12 +99,10 @@ async fn dismiss_notification(id: String, state: State<'_, AppState>) -> Result<
   update_notification(&id, "dismiss", &state).await
 }
 
-/// Stop sound is global: it silences every row the service currently holds.
+/// Stop sound is global: it acknowledges every alerting row (`POST /sound/stop`).
 #[tauri::command]
-async fn silence_all_sound(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-  let request = state
-    .client
-    .post(format!("{}/sound/silence", state.service));
+async fn stop_all_sound(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+  let request = state.client.post(format!("{}/sound/stop", state.service));
   update_sound(&app, &state, request).await
 }
 
@@ -123,6 +121,29 @@ async fn snooze_sound(
   update_sound(&app, &state, request).await
 }
 
+/// Opens the service's web interface (task management and the REST API
+/// reference) in the default browser. The URL is the validated local service.
+#[tauri::command]
+fn open_web_interface(state: State<'_, AppState>) -> Result<(), String> {
+  #[cfg(target_os = "macos")]
+  {
+    std::process::Command::new("/usr/bin/open")
+      .arg(format!("{}/", state.service))
+      .status()
+      .map_err(|e| e.to_string())
+      .and_then(|status| {
+        status
+          .success()
+          .then_some(())
+          .ok_or_else(|| "Could not open the web interface.".to_string())
+      })
+  }
+  #[cfg(not(target_os = "macos"))]
+  {
+    Err(format!("Open {}/ in a browser.", state.service))
+  }
+}
+
 async fn update_sound(
   app: &AppHandle,
   state: &AppState,
@@ -137,7 +158,7 @@ async fn update_sound(
     .json()
     .await
     .map_err(|e| e.to_string())?;
-  // Show the new sound state immediately; row silenced flags follow on the next poll.
+  // Show the new sound state immediately; row states follow on the next poll.
   let snapshot = {
     let mut snapshot = state.snapshot.lock().unwrap_or_else(|e| e.into_inner());
     snapshot.sound = sound;
@@ -204,12 +225,14 @@ fn start_polling(app: AppHandle) {
           Ok(notifications) => Snapshot {
             notifications,
             sound: sound.unwrap_or_default(),
+            service: state.service.clone(),
             connected: true,
             error: None,
           },
           Err(_) => Snapshot {
             notifications: previous.notifications.clone(),
             sound: previous.sound.clone(),
+            service: state.service.clone(),
             connected: false,
             error: Some("Waiting for the notification service…".into()),
           },
@@ -223,7 +246,7 @@ fn start_polling(app: AppHandle) {
           &next
             .notifications
             .iter()
-            .map(|n| (n.id.as_str(), n.task_state().is_alerting()))
+            .map(|n| (n.id.as_str(), n.state.is_alerting()))
             .collect::<Vec<_>>(),
         );
         let changed = *previous != next;
@@ -236,7 +259,7 @@ fn start_polling(app: AppHandle) {
           let alerting = snapshot
             .notifications
             .iter()
-            .filter(|n| n.task_state().is_alerting())
+            .filter(|n| n.state.is_alerting())
             .count();
           let tooltip = if snapshot.notifications.is_empty() {
             "Desktop Notify — All caught up".into()
@@ -361,7 +384,8 @@ fn main() {
       focus_notification,
       dismiss_notification,
       acknowledge_notification,
-      silence_all_sound,
+      stop_all_sound,
+      open_web_interface,
       snooze_sound
     ])
     .setup(|app| {

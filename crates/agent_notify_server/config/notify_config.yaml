@@ -15,11 +15,8 @@
 # to each other.
 
 # Paths can be absolute, or relative to this YAML file's directory.
-alert_beep_sound: test_beep.wav
 alert_done_sound: sounds/smrpg_flower.wav
 alert_await_user_input_sound: sounds/smrpg_ghost.wav
-
-extra_alert_beep_sounds: []
 
 extra_alert_done_sounds:
   - sounds/smrpg_specialflower.wav

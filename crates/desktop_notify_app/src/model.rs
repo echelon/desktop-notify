@@ -7,6 +7,8 @@ pub struct Snapshot {
   pub notifications: Vec<Notification>,
   /// Global sound controls; defaults when an older service lacks `/sound`.
   pub sound: SoundState,
+  /// Base URL of the service, shown so the app documents its REST interface.
+  pub service: String,
   pub connected: bool,
   pub error: Option<String>,
 }

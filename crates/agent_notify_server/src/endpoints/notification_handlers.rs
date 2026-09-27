@@ -141,8 +141,8 @@ fn replace_row(
     log::info!(
       "session {:?}: {:?} -> {:?}",
       notification.session_id,
-      previous.task_state(),
-      notification.task_state()
+      previous.state,
+      notification.state
     );
     if notification.session_id.is_some() {
       notification.context = previous.context;
@@ -179,19 +179,16 @@ fn notify(state: &ServerState, request: NotificationRequest, task: TaskState) ->
   if pool.iter().any(|path| !path.is_file()) {
     return HttpResponse::ServiceUnavailable().body("configured notification sound is missing\n");
   }
-  let mut notification = Notification {
+  let notification = Notification {
     id: fresh_id(),
     session_id: request.session_id,
-    state: None,
+    state: task,
     agent: request.agent,
-    silenced: false,
-    kind: String::new(),
     title: title.into(),
     message: message.into(),
     context: Default::default(),
     origin: request.origin,
   };
-  notification.set_state(task);
   // Serialize replacement and dismissal with their corresponding audio command.
   let mut current = state
     .notifications
@@ -262,9 +259,7 @@ pub async fn working(
     .active
     .iter()
     .find(|n| n.session_id.as_deref() == Some(request.session_id.as_str()));
-  if request.only_if_waiting
-    && (other_tool || !previous.is_some_and(|n| n.task_state().is_waiting()))
-  {
+  if request.only_if_waiting && (other_tool || !previous.is_some_and(|n| n.state.is_waiting())) {
     return HttpResponse::Ok().json(WorkingResponse {
       updated: false,
       notification: None,
@@ -288,30 +283,22 @@ pub async fn working(
   if let Err(response) = valid_text(&title, &message) {
     return response;
   }
-  let mut notification = Notification {
+  let notification = Notification {
     id: fresh_id(),
     session_id: Some(request.session_id),
-    state: None,
+    state: TaskState::Working,
     agent: request.agent,
-    silenced: false,
-    kind: String::new(),
     title,
     message,
     context: Default::default(),
     origin: request.origin,
   };
-  notification.set_state(TaskState::Working);
   let notification = replace_row(&mut current, notification, request.context, None);
   reconcile_audio(&state, &mut current);
   HttpResponse::Ok().json(WorkingResponse {
     updated: true,
     notification: Some(notification),
   })
-}
-
-pub async fn current_notification(state: web::Data<ServerState>) -> HttpResponse {
-  let current = lock_and_resume(&state);
-  HttpResponse::Ok().json(current.active.first())
 }
 
 pub async fn list_notifications(state: web::Data<ServerState>) -> HttpResponse {
@@ -345,7 +332,7 @@ pub(crate) fn lock_and_resume(state: &ServerState) -> std::sync::MutexGuard<'_, 
 pub(crate) fn sound_state(current: &NotificationState) -> notify_types::SoundState {
   notify_types::SoundState {
     snoozed_until: current.snoozed_until,
-    alerting: current.active.iter().any(|n| n.task_state().is_alerting()),
+    alerting: current.active.iter().any(|n| n.state.is_alerting()),
   }
 }
 
@@ -362,13 +349,13 @@ fn reconcile_audio(state: &ServerState, current: &mut NotificationState) {
   } else {
     [TaskState::InputNeeded, TaskState::Failed, TaskState::Done]
       .into_iter()
-      .find_map(|task| current.active.iter().find(|n| n.task_state() == task))
+      .find_map(|task| current.active.iter().find(|n| n.state == task))
   };
   let next_id = next.map(|n| n.id.clone());
   if current.audio_id == next_id {
     return;
   }
-  match next.and_then(|n| sound_pool(state, n.task_state())) {
+  match next.and_then(|n| sound_pool(state, n.state)) {
     Some((name, pool)) => state.audio.play_loop(LoopSpec {
       name: name.into(),
       pool,
@@ -402,7 +389,7 @@ pub async fn dismiss(state: web::Data<ServerState>, id: web::Path<String>) -> Ht
 /// Per-row dismissal: an alerting row moves to its quiet counterpart (done →
 /// done_acknowledged, input_needed → input_needed_ignored, failed →
 /// failed_acknowledged) and stays listed. Other rows keep alerting. Stale or
-/// already-quiet IDs are harmless. `/silence/{id}` is the legacy name.
+/// already-quiet IDs are harmless.
 pub async fn acknowledge(state: web::Data<ServerState>, id: web::Path<String>) -> HttpResponse {
   let mut current = state
     .notifications
@@ -412,15 +399,15 @@ pub async fn acknowledge(state: web::Data<ServerState>, id: web::Path<String>) -
     .active
     .iter_mut()
     .find(|n| n.id == *id)
-    .and_then(|n| n.task_state().acknowledged().map(|quiet| (n, quiet)));
+    .and_then(|n| n.state.acknowledged().map(|quiet| (n, quiet)));
   let stopped = quiet.is_some();
   if let Some((notification, quiet)) = quiet {
     log::info!(
       "session {:?}: {:?} -> {quiet:?} (dismissed)",
       notification.session_id,
-      notification.task_state()
+      notification.state
     );
-    notification.set_state(quiet);
+    notification.state = quiet;
     reconcile_audio(&state, &mut current);
   }
   HttpResponse::Ok().json(DismissResponse { stopped })
@@ -431,16 +418,16 @@ pub async fn sound(state: web::Data<ServerState>) -> HttpResponse {
   HttpResponse::Ok().json(sound_state(&current))
 }
 
-/// Global Stop sound: acknowledges every alerting row and cancels any snooze.
-/// Later updates are fresh alerts and sound again.
-pub async fn silence_all(state: web::Data<ServerState>) -> HttpResponse {
+/// Global Stop sound (`POST /sound/stop`): acknowledges every alerting row and
+/// cancels any snooze. Rows stay listed; later updates are fresh alerts.
+pub async fn stop_sound(state: web::Data<ServerState>) -> HttpResponse {
   let mut current = state
     .notifications
     .lock()
     .unwrap_or_else(|e| e.into_inner());
   for notification in &mut current.active {
-    if let Some(quiet) = notification.task_state().acknowledged() {
-      notification.set_state(quiet);
+    if let Some(quiet) = notification.state.acknowledged() {
+      notification.state = quiet;
     }
   }
   current.snoozed_until = None;

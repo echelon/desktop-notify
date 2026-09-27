@@ -1,8 +1,8 @@
 # agent-notify-server
 
 Local REST server with looping sounds and actionable desktop alerts for agents.
-See the [workspace README](../../README.md) for the new notification API, Tauri
-tray app, and the installed **Codex CLI hooks**. Replaces `afplay` bash loops that were
+See the [workspace README](../../README.md) for the Tauri tray app and the
+installed Codex/Claude Code hooks. Replaces `afplay` bash loops that were
 prone to leaving zombie processes — the server owns the audio pipeline and
 exits cleanly with Ctrl+C.
 
@@ -20,63 +20,52 @@ The server listens on `127.0.0.1:43110` by default. Override with
 
 ## Endpoints
 
-| Method | Path           | Behavior                                                                                     |
-|--------|----------------|----------------------------------------------------------------------------------------------|
-| GET    | `/`            | Static HTML page listing the API.                                                            |
-| POST   | `/awaiting_user_input` | JSON `{title, message, session_id?, context?}`; awaiting loop plus dismissible desktop alert. |
-| POST   | `/all_tasks_finished` | JSON `{title, message, session_id?, context?}`; done loop plus dismissible desktop alert. |
-| GET    | `/notifications` | All session rows, newest update first. |
-| GET    | `/notification` | Latest row (legacy compatibility). |
-| POST   | `/working` | JSON `{session_id, title?, message?, context?, origin?, only_if_waiting?, tool_use_id?}`; mark the session busy (no alert). `only_if_waiting` only resumes an `input_needed*` row, never creates one. Returns `{updated, notification?}`. |
-| POST   | `/task_failed` | Like `/all_tasks_finished`, for a turn that ended on an error; alerts with the await sound. |
-| POST   | `/acknowledge/{id}` | Dismiss one alerting row: `done`→`done_acknowledged`, `input_needed`→`input_needed_ignored`, `failed`→`failed_acknowledged`. It stays listed; others keep alerting. |
-| POST   | `/silence/{id}` | Legacy name for `/acknowledge/{id}`. |
-| GET    | `/sound` | `{snoozed_until, alerting}`; `snoozed_until` is RFC 3339 UTC or `null`. |
-| POST   | `/sound/silence` | Global Stop sound: acknowledge every alerting row and cancel any snooze. |
-| POST   | `/sound/snooze` | JSON `{seconds}` (1–86400); mute all sound until that wall-clock time. |
-| POST   | `/sound/resume` | End a snooze early. |
-| POST   | `/dismiss/{id}` | Clear this entry only; stale alert IDs cannot clear newer updates. |
-| POST   | `/stop` | Stop all audio, clear every session entry, and cancel any snooze. |
-| GET    | `/health` | Service identity, API version, and process ID for hook startup. |
-| GET    | `/alert_beep`  | Play `alert_beep_sound` once (mixes over any active loop).                                   |
-| GET    | `/alert_done`  | Play `alert_done_sound` once.                                                                |
-| GET    | `/alert_await` | Play `alert_await_user_input_sound` once.                                                    |
-| GET    | `/loop_beep`   | Loop `alert_beep_sound`. Replaces any active loop.                                           |
-| GET    | `/loop_done`   | Loop `alert_done_sound`. Replaces any active loop.                                           |
-| GET    | `/loop_await`  | Loop `alert_await_user_input_sound`. Replaces any active loop.                               |
-| GET    | `/stop`        | Stop everything — loops *and* queued one-shots.                                              |
-| GET    | `/state`       | Read-only JSON snapshot of the audio engine and loaded config. Does **not** change playback. |
+Open **`http://127.0.0.1:43110/`** in a browser for the web interface: live tasks
+with Dismiss/Clear, sound controls, and the API reference. `GET /` is permanent.
+The full contract (task states, request fields, and which client calls each
+endpoint) is in the workspace [AGENTS.md](../../AGENTS.md#http-api-current-api-version-4).
 
-Each row carries `state` (`working`, `input_needed`, `input_needed_ignored`,
-`done`, `done_acknowledged`, `failed`, `failed_acknowledged`); `kind` and
-`silenced` remain for older clients. Rows may carry `agent` (`claude_code`,
-`codex`, or `unknown` for unrecognized values); updates without it keep the
-previous value. `/awaiting_user_input` accepts an optional
-`tool_use_id`. Notification updates replace only the matching `session_id`. Omitted IDs use one
-legacy row. The shared sound loop prioritizes unsilenced questions, then the
-latest completion. Clearing or silencing a row leaves other sessions intact and
-plays the next outstanding alert if necessary. A snooze stores its deadline and
-mutes the loop without silencing rows; any later request that reads or changes
-notification state (including `/notifications` polls) resumes sound once it has
-passed. `/state` exposes `notifications`, `sound`,
-and `audio_notification_id` alongside its legacy fields. Session IDs are nonblank,
-at most 256 bytes, and cannot contain control characters. Rows are held in memory. Optional `context` fields are `cwd`, `work_arc`,
-`current_ask`, `repo_name`, and `repo_description`. Partial updates retain existing
-context for named sessions; empty strings clear fields. See the
-[workspace context reference](../../README.md#optional-session-context) for limits,
-collection rules, and examples.
+| Method | Path | Behavior |
+| --- | --- | --- |
+| GET | `/` | Web interface and API reference (permanent). |
+| POST | `/awaiting_user_input` | `{title, message, session_id?, context?, origin?, agent?, tool_use_id?}`; row becomes `input_needed`. |
+| POST | `/all_tasks_finished` | Same body without `tool_use_id`; row becomes `done`. |
+| POST | `/task_failed` | Same; row becomes `failed`. |
+| POST | `/working` | `{session_id, title?, message?, context?, origin?, agent?, only_if_waiting?, tool_use_id?}`; row becomes `working` (no alert). Returns `{updated, notification?}`. |
+| POST | `/acknowledge/{id}` | Dismiss one alerting row; it stays listed in its quiet state. |
+| POST | `/dismiss/{id}` | Clear one row. |
+| GET | `/notifications` | All rows, newest first. |
+| GET | `/sound` | `{snoozed_until, alerting}`. |
+| POST | `/sound/stop` | Acknowledge every alerting row and cancel any snooze; rows stay. |
+| POST | `/sound/snooze` | `{seconds}` (1–86400): mute until that wall-clock time. |
+| POST | `/sound/resume` | End a snooze early. |
+| POST | `/stop` | Clear every row, cancel any snooze, stop all audio (`GET` also accepted). |
+| GET | `/state` | Rows, sound, audio engine, config, and desktop app status. Read-only. |
+| GET | `/health` | `{service, api_version, pid}`. |
+| POST | `/desktop/status` | Tray app heartbeat. |
 
-Mixing rules for legacy sound-only endpoints:
+Rows carry `state` (`working`, `input_needed`, `input_needed_ignored`, `done`,
+`done_acknowledged`, `failed`, `failed_acknowledged`) and optionally `agent`
+(`claude_code`, `codex`, or `unknown`). Updates replace only the matching
+`session_id`; omitted IDs share one unassigned row, and named sessions keep their
+context, origin, and agent when an update omits them. One shared loop plays for
+the newest `input_needed`, else `failed`, else `done` row. A snooze stores its
+deadline and mutes the loop without changing rows; the next request after it
+passes (the app polls every 400 ms) resumes sound. Rows are held in memory.
 
-- One-shots mix with whichever loop is playing.
-- Requesting a new sound-only loop replaces the prior loop and clears all status rows.
-- `/stop` halts everything.
-- A missing config key makes the corresponding endpoint return `404`.
+The sound-only `/alert_*` and `/loop_*` endpoints, `GET /notification`,
+`POST /silence/{id}`, and the `kind`/`silenced` row fields were removed in favor
+of the endpoints above.
 
 ### `/state` response shape
 
 ```json
 {
+  "notifications": [],
+  "audio_notification_id": null,
+  "sound": {"snoozed_until": null, "alerting": false},
+  "desktop": {"presentation": "tauri", "window_visible": false, "pid": 123, "displayed_ids": []},
+  "desktop_connected": true,
   "audio": {
     "loop_playing": true,
     "loop_name": "done",
@@ -88,10 +77,8 @@ Mixing rules for legacy sound-only endpoints:
     "loop_uptime_secs": 17
   },
   "config": {
-    "alert_beep_sound": "…/test_beep.wav",
     "alert_done_sound": "…/smrpg_flower.wav",
     "alert_await_user_input_sound": "…/smrpg_ghost.wav",
-    "extra_alert_beep_count": 0,
     "extra_alert_done_count": 3,
     "extra_alert_await_count": 3,
     "gap_schedule_millis": [2000, 1000, 500, 200],
@@ -101,20 +88,17 @@ Mixing rules for legacy sound-only endpoints:
 }
 ```
 
-`loop_name` reflects which endpoint started the loop (`beep` / `done` /
-`await`). When idle, `loop_playing` is `false` and the loop fields collapse
-to zero/null.
+`loop_name` is `done` or `await`. When idle, `loop_playing` is `false` and the
+loop fields collapse to zero/null.
 
 ## Config
 
 `config/notify_config.yaml`:
 
 ```yaml
-alert_beep_sound: test_beep.wav
 alert_done_sound: sounds/smrpg_flower.wav
 alert_await_user_input_sound: sounds/smrpg_ghost.wav
 
-extra_alert_beep_sounds: []
 extra_alert_done_sounds:
   - sounds/smrpg_specialflower.wav
   - sounds/smrpg_correct.wav
@@ -148,7 +132,7 @@ escalate_wait_3: 45
   stage's jitter is also applied to the escalation wait itself, so voices
   2/3/4 don't always land exactly on `escalate_wait_N` — their phase
   drifts by `+/- rand(0..=jitter)` ms.
-- **Escalation**: a `/loop_*` request starts one voice immediately. At
+- **Escalation**: an alert's loop starts one voice immediately. At
   `escalate_wait_1` / `escalate_wait_2` / `escalate_wait_3` seconds, a
   second / third / fourth concurrent voice joins the mix. New voices are
   taken from `extra_alert_<state>_sounds` in order; when that pool is
@@ -157,165 +141,6 @@ escalate_wait_3: 45
   its own thread and drifts naturally relative to the others.
 - All voices in a session share the *current* stage's gap, so existing
   voices also speed up when the supervisor advances stages.
-
-## Legacy Claude Code wiring
-
-This section documents the older audio-only integration. For Codex and desktop
-alerts, use the [global hook installer](../../README.md#global-codex-cli-hooks).
-
-The intended workflow:
-
-- When Claude needs input → start a `loop_await` sound.
-- When the user replies → `stop`.
-- When Claude finishes a turn → start a `loop_done` sound (replacing
-  `loop_await` if it was still playing); the next user prompt stops it.
-
-### `~/.claude/agent_notify.sh`
-
-This helper probes port 43110, spawns the server with `cargo run` if nothing
-is listening (waiting up to 60s for it to come up), then curls the requested
-endpoint. Drop it at `~/.claude/agent_notify.sh` and `chmod +x` it.
-
-```bash
-#!/bin/bash
-# Usage: agent_notify.sh await | done | stop
-set -u
-
-PORT=43110
-REPO="$HOME/dev/echelon/desktop-notify"
-LOGFILE="/tmp/agent-notify-server.log"
-
-case "${1:-}" in
-  await) endpoint="loop_await" ;;
-  done)  endpoint="loop_done"  ;;
-  stop)  endpoint="stop"       ;;
-  *) echo "usage: $0 await|done|stop" >&2; exit 1 ;;
-esac
-
-probe() {
-  curl -fsS -o /dev/null -m 0.5 "http://127.0.0.1:$PORT/" 2>/dev/null
-}
-
-if ! probe; then
-  if [ ! -d "$REPO" ]; then
-    echo "agent-notify-server: repo not found at $REPO" >&2
-    exit 1
-  fi
-  (
-    cd "$REPO" || exit 1
-    nohup cargo run --bin agent-notify-server >>"$LOGFILE" 2>&1 &
-    disown
-  ) </dev/null >/dev/null 2>&1
-
-  for _ in $(seq 1 120); do
-    probe && break
-    sleep 0.5
-  done
-
-  if ! probe; then
-    echo "agent-notify-server: failed to start; see $LOGFILE" >&2
-    exit 1
-  fi
-fi
-
-curl -fsS -m 1 "http://127.0.0.1:$PORT/$endpoint" -o /dev/null
-```
-
-### `~/.claude/settings.json`
-
-Merge these hooks into your existing `hooks` block. `async: true` ensures the
-hook never blocks the UI while waiting for `cargo run` on the cold-start path.
-
-```json
-{
-  "hooks": {
-    "Notification": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/agent_notify_on_notification.sh",
-            "async": true
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/agent_notify.sh done",
-            "async": true
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/agent_notify.sh stop",
-            "async": true
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "AskUserQuestion",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/agent_notify.sh stop",
-            "async": true
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Why two stop hooks? `UserPromptSubmit` fires only for *typed* user messages, not
-for `AskUserQuestion` option selections. The `PostToolUse` matcher on
-`AskUserQuestion` covers that case — it fires when the tool call returns
-(i.e., once you've answered), and the helper's `/stop` silences whatever
-loop the `Notification` or `Stop` hook started.
-
-Why the notification wrapper? The `Notification` hook fires for *every*
-Claude Code notification — idle reminders, permission asks, background-agent
-attention pings — not just "Claude needs your input". Crucially, the idle
-reminder uses the *same* `message` text as a real input prompt
-("Claude is waiting for your input"), so the only reliable discriminator
-is the `notification_type` field.
-`~/.claude/agent_notify_on_notification.sh` reads the hook payload, logs
-every event to `/tmp/agent-notify-notifications.log` for audit, and
-skips events with `notification_type == "idle_prompt"`. Everything else
-(permission prompts, unknown future types) fires `/loop_await` — better
-to ring the bell on an unknown attention prompt than miss a real one.
-
-### Audit log
-
-The Notification wrapper writes every received notification payload to
-`/tmp/agent-notify-notifications.log`, tagged `FIRE` or `SKIP`. If the await
-sound stops firing for a case you care about (or fires when it shouldn't),
-inspect that log and adjust the `case` patterns in
-`agent_notify_on_notification.sh`.
-
-### Replacing the old bash-loop system
-
-If you previously had `~/.claude/notify_loop.sh`, `notify_stop.sh`,
-`stop_loop.sh`, `stop_stop.sh`, kill any survivors and remove them:
-
-```sh
-pkill -f claude_notify_loop_marker 2>/dev/null
-pkill -f 'afplay.*smrpg' 2>/dev/null
-rm -f ~/.claude/notify_loop.sh ~/.claude/notify_stop.sh \
-      ~/.claude/stop_loop.sh   ~/.claude/stop_stop.sh \
-      ~/.claude/notify_loop.pid ~/.claude/stop_loop.pid
-```
 
 ## Shutdown
 

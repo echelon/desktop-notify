@@ -61,6 +61,8 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 5px 16px; }
 .sound-status { margin: 7px 0 0; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .sound-controls.snoozed .sound-status { color: #b7a6ff; }
 footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 15px; border-top: 1px solid var(--border); color: var(--muted); font-size: 10px; user-select: none; -webkit-user-select: none; }
+.footer-link { margin-left: auto; margin-right: 10px; padding: 0; border: 0; background: none; color: var(--muted); font-size: 10px; }
+.footer-link:hover { color: var(--fg); text-decoration: underline; }
 .connection::before { content: ''; display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: #7f8fae; margin-right: 6px; }
 .connection.online::before { background: #7cdbad; }
 kbd { font: inherit; }

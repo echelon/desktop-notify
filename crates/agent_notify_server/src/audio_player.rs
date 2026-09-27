@@ -5,21 +5,14 @@
 //! handlers — interact with it through [`AudioPlayerHandle`], which forwards
 //! commands over an mpsc channel.
 //!
-//! The engine maintains two kinds of mixing channels at the cpal output:
-//!
-//! - **`oneshot_sink`** — fire-and-forget sounds queued by `play_once`. Reused
-//!   for the lifetime of the engine via `clear() + play()` so subsequent
-//!   appends keep working after a `StopAll`.
-//! - **A loop session** — a supervisor thread that escalates over time. It
+//! The engine plays one **loop session** at a time: a supervisor thread that
+//! escalates over time. It
 //!   starts one looping iterator immediately, then adds a second, third, and
 //!   fourth concurrent iterator at the configured escalation times. Each
 //!   iterator owns its own `Sink` and runs in its own thread, so the voices
 //!   drift naturally relative to one another. Replacing the loop session
 //!   (`PlayLoop` while one is running) or `StopAll` signals every iterator
 //!   and the supervisor via a shared `Arc<AtomicBool>` polled every 50ms.
-//!
-//! Because every channel shares the same `OutputStreamHandle`, one-shots
-//! mix on top of however many loop voices are currently running.
 
 use std::fs::File;
 use std::io::BufReader;
@@ -55,10 +48,6 @@ impl AudioPlayerHandle {
       rx,
     )
   }
-  pub fn play_once(&self, path: PathBuf) {
-    let _ = self.tx.send(AudioCommand::PlayOnce(path));
-  }
-
   pub fn play_loop(&self, spec: LoopSpec) {
     let _ = self.tx.send(AudioCommand::PlayLoop(spec));
   }
@@ -127,9 +116,8 @@ impl InternalStatus {
 
 #[derive(Clone, Debug)]
 pub struct LoopSpec {
-  /// Short tag identifying which endpoint started this loop ("beep" /
-  /// "done" / "await"). Surfaced in `/state` so callers can see what's
-  /// playing.
+  /// Short tag naming the sound pool this loop plays ("done" or "await").
+  /// Surfaced in `/state` so callers can see what's playing.
   pub name: String,
   /// Ordered pool of sounds: primary first, then extras. The supervisor
   /// indexes this with `layer % pool.len()`, so when extras run out it
@@ -160,7 +148,6 @@ pub fn spawn_audio_player() -> (AudioPlayerHandle, JoinHandle<()>) {
 
 #[derive(Debug)]
 pub(crate) enum AudioCommand {
-  PlayOnce(PathBuf),
   PlayLoop(LoopSpec),
   StopAll,
   Shutdown,
@@ -176,24 +163,10 @@ fn run_audio_engine(rx: Receiver<AudioCommand>, status: Arc<Mutex<InternalStatus
     }
   };
 
-  let oneshot_sink = match Sink::try_new(&stream_handle) {
-    Ok(s) => s,
-    Err(e) => {
-      log::error!("audio engine: failed to create oneshot sink: {}", e);
-      while rx.recv().is_ok() {}
-      return;
-    }
-  };
-
   let mut current_loop: Option<LoopController> = None;
 
   while let Ok(cmd) = rx.recv() {
     match cmd {
-      AudioCommand::PlayOnce(path) => {
-        if let Err(e) = enqueue_sound(&oneshot_sink, &path) {
-          log::warn!("play_once {}: {}", path.display(), e);
-        }
-      }
       AudioCommand::PlayLoop(spec) => {
         stop_current_loop(&mut current_loop, &status);
         if spec.pool.is_empty() {
@@ -202,21 +175,15 @@ fn run_audio_engine(rx: Receiver<AudioCommand>, status: Arc<Mutex<InternalStatus
         }
         current_loop = Some(start_loop_supervisor(&stream_handle, spec, status.clone()));
       }
-      AudioCommand::StopAll => {
-        stop_current_loop(&mut current_loop, &status);
-        oneshot_sink.clear();
-        oneshot_sink.play();
-      }
+      AudioCommand::StopAll => stop_current_loop(&mut current_loop, &status),
       AudioCommand::Shutdown => {
         stop_current_loop(&mut current_loop, &status);
-        oneshot_sink.stop();
         return;
       }
     }
   }
 
   stop_current_loop(&mut current_loop, &status);
-  oneshot_sink.stop();
 }
 
 fn start_loop_supervisor(

@@ -18,10 +18,6 @@ use actix_web::{web, App, HttpServer};
 
 use crate::audio_player::spawn_audio_player;
 use crate::config::{NotifyConfig, DEFAULT_CONFIG_PATH};
-use crate::endpoints::alert_handlers::{
-  alert_await_handler, alert_beep_handler, alert_done_handler,
-};
-use crate::endpoints::loop_handlers::{loop_await_handler, loop_beep_handler, loop_done_handler};
 use crate::endpoints::notification_handlers::*;
 use crate::endpoints::root_handler::root_handler;
 use crate::endpoints::state_handler::state_handler;
@@ -74,33 +70,29 @@ async fn main() -> anyhow::Result<()> {
       .app_data(web::JsonConfig::default().limit(32 * 1024))
       .wrap(
         Logger::default()
-          .exclude("/notification")
           .exclude("/notifications")
           .exclude("/sound")
           .exclude("/working")
           .exclude("/desktop/status"),
       )
+      // Permanent: the web interface for managing tasks, alerts, and sound,
+      // plus the live API reference. Never remove it.
       .route("/", web::get().to(root_handler))
-      .route("/alert_beep", web::get().to(alert_beep_handler))
-      .route("/alert_done", web::get().to(alert_done_handler))
-      .route("/alert_await", web::get().to(alert_await_handler))
-      .route("/loop_beep", web::get().to(loop_beep_handler))
-      .route("/loop_done", web::get().to(loop_done_handler))
-      .route("/loop_await", web::get().to(loop_await_handler))
+      // Clear everything (rows, snooze, audio). POST is the web interface's
+      // "Clear all". GET only keeps shells that still hold the old `stop-sound`
+      // alias working; the alias now uses POST /sound/stop.
       .route("/stop", web::get().to(stop_handler))
       .route("/state", web::get().to(state_handler))
       .route("/health", web::get().to(health))
       .route("/awaiting_user_input", web::post().to(awaiting_user_input))
       .route("/all_tasks_finished", web::post().to(all_tasks_finished))
-      .route("/notification", web::get().to(current_notification))
       .route("/notifications", web::get().to(list_notifications))
       .route("/dismiss/{id}", web::post().to(dismiss))
       .route("/working", web::post().to(working))
       .route("/task_failed", web::post().to(task_failed))
       .route("/acknowledge/{id}", web::post().to(acknowledge))
-      .route("/silence/{id}", web::post().to(acknowledge))
       .route("/sound", web::get().to(sound))
-      .route("/sound/silence", web::post().to(silence_all))
+      .route("/sound/stop", web::post().to(stop_sound))
       .route("/sound/snooze", web::post().to(snooze))
       .route("/sound/resume", web::post().to(resume_sound))
       .route("/desktop/status", web::post().to(desktop_status))
