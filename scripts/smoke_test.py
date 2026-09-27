@@ -65,7 +65,9 @@ def run(restart=False):
     sessions = ["smoke-" + uuid.uuid4().hex for _ in range(2)]
     try:
         done = {"hook_event_name": "Stop", "cwd": "/tmp/hook-smoke-test",
-                "last_assistant_message": "Desktop Notify completion hook test passed."}
+                "last_assistant_message": "Desktop Notify completion hook test passed.",
+                "context": {"repo_name": "Smoke test", "repo_description": "Local notification test fixture.",
+                            "work_arc": "Verify independent agent notifications", "current_ask": "Check two sessions"}}
         # Independent sessions also exercise the shared cold-start lock.
         with ThreadPoolExecutor(max_workers=2) as pool:
             list(pool.map(invoke, [{**done, "session_id": session} for session in sessions]))
@@ -77,6 +79,9 @@ def run(restart=False):
         a, b = [session_notification(session) for session in sessions]
         assert a and b and a["id"] != b["id"]
         assert a["kind"] == b["kind"] == "all_tasks_finished"
+        assert a["context"]["repo_name"] == "Smoke test"
+        assert a["context"]["cwd"] == done["cwd"]
+        assert a["context"]["current_ask"] == "Check two sessions"
         if hook.sys.platform == "darwin":
             assert a.get("origin", {}).get("pid"), "Installed hook did not attach focus metadata"
         print("PASS concurrent installed hooks created two independent session rows", flush=True)
@@ -92,6 +97,7 @@ def run(restart=False):
             current = session_notification(sessions[0])
             assert current["kind"] == "awaiting_user_input"
             assert session_notification(sessions[1]) == b
+            assert current["context"]["work_arc"] == "Verify independent agent notifications"
             eventually(lambda: hook.http("/state")["audio"]["loop_name"] == "await")
             assert hook.http("/health")["pid"] == pid
         print("PASS questions and approvals update only their own session", flush=True)

@@ -23,8 +23,8 @@ The server listens on `127.0.0.1:43110` by default. Override with
 | Method | Path           | Behavior                                                                                     |
 |--------|----------------|----------------------------------------------------------------------------------------------|
 | GET    | `/`            | Static HTML page listing the API.                                                            |
-| POST   | `/awaiting_user_input` | JSON `{title, message, session_id?}`; awaiting loop plus dismissible desktop alert. |
-| POST   | `/all_tasks_finished` | JSON `{title, message, session_id?}`; done loop plus dismissible desktop alert. |
+| POST   | `/awaiting_user_input` | JSON `{title, message, session_id?, context?}`; awaiting loop plus dismissible desktop alert. |
+| POST   | `/all_tasks_finished` | JSON `{title, message, session_id?, context?}`; done loop plus dismissible desktop alert. |
 | GET    | `/notifications` | All session rows, newest update first. |
 | GET    | `/notification` | Latest row (legacy compatibility). |
 | POST   | `/silence/{id}` | Stop sound for this entry, keeping its status and focus target. |
@@ -45,7 +45,11 @@ legacy row. The shared sound loop prioritizes unsilenced questions, then the
 latest completion. Clearing or silencing a row leaves other sessions intact and
 plays the next outstanding alert if necessary. `/state` exposes `notifications`
 and `audio_notification_id` alongside its legacy fields. Session IDs are nonblank,
-at most 256 bytes, and cannot contain control characters. Rows are held in memory.
+at most 256 bytes, and cannot contain control characters. Rows are held in memory. Optional `context` fields are `cwd`, `work_arc`,
+`current_ask`, `repo_name`, and `repo_description`. Partial updates retain existing
+context for named sessions; empty strings clear fields. See the
+[workspace context reference](../../README.md#optional-session-context) for limits,
+collection rules, and examples.
 
 Mixing rules for legacy sound-only endpoints:
 

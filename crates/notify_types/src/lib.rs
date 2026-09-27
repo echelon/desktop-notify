@@ -10,8 +10,78 @@ pub struct Notification {
   pub kind: String,
   pub title: String,
   pub message: String,
+  #[serde(default, skip_serializing_if = "SessionContext::is_empty")]
+  pub context: SessionContext,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub origin: Option<Origin>,
+}
+
+/// Optional descriptive context, independent of the notification's immediate message.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SessionContext {
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub cwd: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub work_arc: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub current_ask: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub repo_name: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub repo_description: Option<String>,
+}
+
+impl SessionContext {
+  pub fn is_empty(&self) -> bool {
+    self == &Self::default()
+  }
+
+  pub fn validate(&self) -> Result<(), &'static str> {
+    for (value, limit) in [
+      (&self.cwd, 4096),
+      (&self.work_arc, 2000),
+      (&self.current_ask, 2000),
+      (&self.repo_name, 200),
+      (&self.repo_description, 1000),
+    ] {
+      if value.as_ref().is_some_and(|text| {
+        text.chars().count() > limit
+          || text
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\t')
+      }) {
+        return Err(
+          "context fields exceed their character limit or contain unsupported control characters",
+        );
+      }
+    }
+    Ok(())
+  }
+
+  /// Omitted/null fields retain previous values; empty strings explicitly clear them.
+  pub fn apply(&mut self, patch: Self) {
+    if patch
+      .cwd
+      .as_ref()
+      .is_some_and(|cwd| Some(cwd.trim()) != self.cwd.as_deref())
+    {
+      // A different workspace must not inherit the previous repository's identity.
+      self.repo_name = None;
+      self.repo_description = None;
+    }
+    for (current, incoming) in [
+      (&mut self.cwd, patch.cwd),
+      (&mut self.work_arc, patch.work_arc),
+      (&mut self.current_ask, patch.current_ask),
+      (&mut self.repo_name, patch.repo_name),
+      (&mut self.repo_description, patch.repo_description),
+    ] {
+      if let Some(value) = incoming {
+        *current = (!value.trim().is_empty()).then(|| value.trim().to_owned());
+      }
+    }
+  }
 }
 
 /// Hints, in decreasing precision, for returning to the requesting session.

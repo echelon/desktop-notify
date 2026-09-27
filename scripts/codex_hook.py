@@ -15,6 +15,7 @@ import urllib.error
 import urllib.request
 
 from notification_origin import capture_origin
+from notification_context import capture_context
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE_URL = "http://127.0.0.1:43110"
@@ -147,6 +148,13 @@ def main():
         if alert:
             ensure_server()
             endpoint, payload = alert
+            try:
+                context = capture_context(event)
+                if context:
+                    payload["context"] = context
+            except Exception:
+                # Optional context must never suppress an alert.
+                pass
             try:
                 origin = capture_origin()
                 if origin:

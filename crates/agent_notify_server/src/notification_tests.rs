@@ -410,3 +410,103 @@ async fn invalid_session_ids_cannot_replace_existing_rows() {
   assert_eq!(state.notifications.lock().unwrap().active, vec![original]);
   assert!(commands.try_recv().is_err());
 }
+
+#[actix_web::test]
+async fn session_context_round_trips_merges_clears_and_stays_scoped() {
+  let (state, _commands) = state();
+  let app = test::init_service(App::new().app_data(state).configure(routes)).await;
+  let full = serde_json::json!({"cwd": "/workspace/one", "repo_name": "One", "repo_description": "First repo", "work_arc": "Improve reliability", "current_ask": "Fix login"});
+  let requests = [
+    (Some("a"), "/awaiting_user_input", full.clone()),
+    (
+      Some("b"),
+      "/all_tasks_finished",
+      serde_json::json!({"repo_name": "Other"}),
+    ),
+    (
+      Some("a"),
+      "/all_tasks_finished",
+      serde_json::json!({"current_ask": "Add tests"}),
+    ),
+    (Some("a"), "/awaiting_user_input", serde_json::Value::Null),
+    (
+      Some("a"),
+      "/all_tasks_finished",
+      serde_json::json!({"work_arc": " Ship the release ", "repo_description": ""}),
+    ),
+    (
+      Some("a"),
+      "/awaiting_user_input",
+      serde_json::json!({"cwd": "/workspace/two"}),
+    ),
+    (None, "/all_tasks_finished", full),
+    (None, "/all_tasks_finished", serde_json::Value::Null),
+  ];
+  let mut responses = Vec::new();
+  for (session, endpoint, context) in requests {
+    let created: serde_json::Value = test::call_and_read_body_json(
+      &app, test::TestRequest::post().uri(endpoint)
+        .set_json(serde_json::json!({"session_id": session, "title": "Update", "message": "Progress", "context": context})).to_request(),
+    ).await;
+    let polled: serde_json::Value = test::call_and_read_body_json(
+      &app,
+      test::TestRequest::get().uri("/notifications").to_request(),
+    )
+    .await;
+    assert_eq!(polled[0], created);
+    if responses.len() >= 2 {
+      let other = polled
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["session_id"] == "b")
+        .unwrap();
+      assert_eq!(other, &responses[1]);
+    }
+    responses.push(created);
+  }
+  assert_eq!(responses[2]["context"]["repo_name"], "One");
+  assert_eq!(responses[2]["context"]["current_ask"], "Add tests");
+  assert_eq!(responses[2]["context"], responses[3]["context"]);
+  assert_eq!(responses[4]["context"]["work_arc"], "Ship the release");
+  assert!(responses[4]["context"].get("repo_description").is_none());
+  assert!(responses[5]["context"].get("repo_name").is_none());
+  assert_eq!(responses[5]["context"]["current_ask"], "Add tests");
+  // Missing session IDs don't let an unrelated caller inherit another's context.
+  assert!(responses[7].get("context").is_none());
+}
+
+#[actix_web::test]
+async fn invalid_context_cannot_replace_an_active_entry_or_its_sound() {
+  let (state, commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  let original: crate::notifications::Notification = test::call_and_read_body_json(
+    &app,
+    test::TestRequest::post()
+      .uri("/awaiting_user_input")
+      .set_json(
+        serde_json::json!({"session_id": "keep", "title": "Original", "message": "Waiting"}),
+      )
+      .to_request(),
+  )
+  .await;
+  commands.try_recv().unwrap();
+  for context in [
+    serde_json::json!({"repo_name": "r".repeat(201)}),
+    serde_json::json!({"repo_description": "d".repeat(1001)}),
+    serde_json::json!({"cwd": "p".repeat(4097)}),
+    serde_json::json!({"work_arc": "a".repeat(2001)}),
+    serde_json::json!({"current_ask": "a".repeat(2001)}),
+    serde_json::json!({"current_ask": "bad\u{0}data"}),
+    serde_json::json!({"repo_name": false}),
+    serde_json::json!({"unknown": "bad"}),
+  ] {
+    let response = test::call_service(
+      &app, test::TestRequest::post().uri("/all_tasks_finished")
+        .set_json(serde_json::json!({"session_id": "keep", "title": "Rejected", "message": "Invalid context", "context": context})).to_request(),
+    ).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+  }
+  assert_eq!(state.notifications.lock().unwrap().active, vec![original]);
+  assert!(commands.try_recv().is_err());
+}

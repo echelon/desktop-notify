@@ -12,6 +12,7 @@ pub struct NotificationRequest {
   title: String,
   message: String,
   session_id: Option<String>,
+  context: Option<notify_types::SessionContext>,
   origin: Option<notify_types::Origin>,
 }
 
@@ -30,6 +31,11 @@ pub async fn all_tasks_finished(
 }
 
 fn notify(state: &ServerState, request: NotificationRequest, done: bool) -> HttpResponse {
+  if let Some(context) = &request.context {
+    if let Err(error) = context.validate() {
+      return HttpResponse::BadRequest().body(error);
+    }
+  }
   if request
     .session_id
     .as_ref()
@@ -82,6 +88,7 @@ fn notify(state: &ServerState, request: NotificationRequest, done: bool) -> Http
     kind: kind.into(),
     title: title.into(),
     message: message.into(),
+    context: Default::default(),
     origin: request.origin,
   };
   // Serialize replacement and dismissal with their corresponding audio command.
@@ -95,10 +102,16 @@ fn notify(state: &ServerState, request: NotificationRequest, done: bool) -> Http
     .position(|n| n.session_id == notification.session_id)
   {
     let previous = current.active.remove(index);
+    if notification.session_id.is_some() {
+      notification.context = previous.context;
+    }
     if notification.origin.is_none() {
       notification.origin = previous.origin;
     }
   }
+  notification
+    .context
+    .apply(request.context.unwrap_or_default());
   current.active.insert(0, notification.clone());
   reconcile_audio(state, &mut current);
   HttpResponse::Ok().json(notification)

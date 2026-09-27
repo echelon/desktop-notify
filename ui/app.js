@@ -23,10 +23,12 @@ function createRow(alert) {
   const info = element('div', 'row-info');
   const eyebrow = element('div', 'eyebrow');
   const kind = element('span', 'kind');
+  const project = element('span', 'project');
   const session = element('span', 'session');
-  eyebrow.append(kind, session);
+  eyebrow.append(kind, project, session);
   const title = element('h2', 'task-title');
-  info.append(eyebrow, title);
+  const preview = element('p', 'context-preview');
+  info.append(eyebrow, title, preview);
   const controls = element('div', 'row-controls');
   const focus = element('button', 'secondary focus', 'Focus');
   focus.addEventListener('click', () => focusTerminal(alert.id));
@@ -39,7 +41,17 @@ function createRow(alert) {
   const details = element('details', 'details');
   const summary = element('summary', 'summary', 'View message');
   const message = element('div', 'message');
-  details.append(summary, message);
+  const context = element('dl', 'session-context');
+  const fields = {};
+  for (const [key, label] of Object.entries({ current_ask: 'Current task', work_arc: 'Work arc', repo_name: 'Repository', repo_description: 'About the repo', cwd: 'Directory' })) {
+    const group = element('div', `context-field context-${key}`);
+    const term = element('dt', 'context-label', label);
+    const value = element('dd', 'context-value');
+    group.append(term, value);
+    context.append(group);
+    fields[key] = { group, value };
+  }
+  details.append(summary, message, context);
   const status = element('p', 'focus-status');
   status.setAttribute('role', 'status');
   const actions = element('div', 'row-actions');
@@ -48,7 +60,39 @@ function createRow(alert) {
   silence.addEventListener('click', () => updateNotification(alert.id, 'silence_notification'));
   actions.append(sound, silence);
   row.append(heading, details, status, actions);
-  return { row, kind, session, title, focus, clear, message, status, sound, silence };
+  return { row, kind, project, session, title, preview, summary, context, fields, focus, clear, message, status, sound, silence };
+}
+
+const optionalText = (value) => typeof value === 'string' ? value.trim() : '';
+const directoryName = (path) => path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path;
+
+function renderContext(refs, alert) {
+  const context = alert.context || {};
+  const cwd = optionalText(context.cwd);
+  const repo = optionalText(context.repo_name);
+  const project = repo || (cwd && directoryName(cwd));
+  refs.project.hidden = !project;
+  refs.project.textContent = project;
+  refs.project.title = [repo, cwd].filter(Boolean).join('\n');
+  if (project && alert.session_id) refs.session.textContent = alert.session_id.slice(-8);
+  // The hooks prefix their alert title with the directory; avoid repeating it.
+  const prefix = cwd && `${directoryName(cwd)}: `;
+  refs.title.textContent = project && prefix && alert.title.startsWith(prefix) ? alert.title.slice(prefix.length) : alert.title;
+  const ask = optionalText(context.current_ask);
+  const arc = optionalText(context.work_arc);
+  const preview = ask || arc;
+  refs.preview.hidden = !preview || preview === refs.title.textContent;
+  refs.preview.textContent = preview ? `${ask ? 'Task' : 'Work'} · ${preview}` : '';
+  refs.preview.title = preview;
+  let hasContext = false;
+  for (const [key, { group, value }] of Object.entries(refs.fields)) {
+    const text = optionalText(context[key]);
+    group.hidden = !text;
+    value.textContent = text;
+    hasContext ||= !!text;
+  }
+  refs.context.hidden = !hasContext;
+  refs.summary.textContent = hasContext ? 'Details' : 'View message';
 }
 
 function render(next) {
@@ -79,6 +123,7 @@ function render(next) {
     refs.title.textContent = alert.title;
     refs.title.title = alert.title;
     refs.message.textContent = alert.message;
+    renderContext(refs, alert);
     const origin = alert.origin;
     const canFocus = origin && ['terminal_app', 'app_pid', 'pid', 'terminal_id', 'tty', 'window_id', 'window_title'].some((key) => origin[key]);
     refs.focus.disabled = focusing.has(alert.id) || !canFocus;

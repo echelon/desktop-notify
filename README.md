@@ -36,7 +36,7 @@ Press Ctrl+C to stop the server.
 Both POST endpoints require nonblank `title` (up to 200 characters) and `message`
 (up to 4,000 characters), and accept an optional `session_id` (nonblank, up to
 256 bytes, no control characters). They return `{id, session_id?, kind, title,
-message, silenced, origin?}`. Each session has one row: updates replace only that
+message, silenced, origin?, context?}`. Each session has one row: updates replace only that
 session's status, get a fresh alert `id`, and turn its sound back on. Requests
 without `session_id` share a legacy unassigned row and never replace named sessions.
 Rows are ordered by most recent update. Focus hints are retained for a session
@@ -58,6 +58,59 @@ use `alert_await_user_input_sound` and take priority over completions, which use
 the audible entry resumes another outstanding alert; silencing another entry does
 not interrupt playback. Legacy sound-only loop endpoints remain available and
 clear the status list when explicitly invoked.
+
+## Optional session context
+
+Both notification endpoints accept a `context` object. Every field is optional:
+
+```json
+{
+  "session_id": "agent-a",
+  "title": "Which database should I target?",
+  "message": "The migration is ready for your choice of database.",
+  "context": {
+    "cwd": "/workspace/customer-portal",
+    "work_arc": "Modernize customer account management",
+    "current_ask": "Add the account migration and verify existing users",
+    "repo_name": "customer-portal",
+    "repo_description": "The customer account and billing application."
+  }
+}
+```
+
+Context is returned by `/notification`, `/notifications`, and `/state`. For a
+named session, omitted or `null` fields retain their previous values; supplied
+strings update them, and an empty string clears a field. A new `cwd` clears old
+repo metadata unless replacements are also supplied. Unassigned entries do not
+inherit context. The limits are 4,096 characters for `cwd`, 2,000 each for
+`work_arc` and `current_ask`, 200 for `repo_name`, and 1,000 for `repo_description`.
+Invalid context rejects the request without changing the existing row or audio.
+
+The collapsed row shows a small project label (repo name, otherwise directory
+basename), the alert title, and one ellipsized task line (current ask, otherwise
+work arc). **Details** reveals the full message and available context. Empty
+fields have no placeholders; notifications without context keep their simple
+message layout. Hover over the project label for the full directory.
+
+The Codex hook collects context locally, without executing repo code or making
+model/network requests:
+
+- `cwd` comes from the hook event. Repo metadata comes from the repository root's
+  `package.json`, `Cargo.toml`, or `pyproject.toml`; the directory name and first
+  README paragraph are fallbacks. Worktree `.git` files are supported.
+- When the supplied `transcript_path` is readable, the current ask comes from the
+  latest saved user request. The work arc uses that run's first agent progress
+  summary or available plan explanation; an explicit `create_goal` objective
+  takes precedence. These are excerpts of existing text, not generated summaries.
+- Transcript parsing is best effort because Codex's transcript format is not a
+  stable interface. At most the last 8 MiB are read, missing/unsupported context
+  is omitted, and context failures never suppress the notification.
+- Explicit `context` on the hook event overrides discovery. Callers can also set
+  `NOTIFY_CWD`, `NOTIFY_WORK_ARC`, `NOTIFY_CURRENT_ASK`, `NOTIFY_REPO_NAME`, and
+  `NOTIFY_REPO_DESCRIPTION`. Direct API callers can update context on every alert.
+
+The three existing hook definitions are unchanged, so already-running sessions
+use the new collection logic on their next question, approval, or completion.
 
 ## Global Codex CLI hooks
 
@@ -108,7 +161,8 @@ frontend is plain HTML/CSS/JavaScript bundled by Tauri; no Node build step is ne
 
 - New alerts open the window above other apps, on every Space, including full-screen apps.
 - Each row shows **Input needed** or **Finished**, a short session ID, and its own
-  **Focus**, **Stop sound**, and **×** buttons. Expand **View message** for details.
+  **Focus**, **Stop sound**, and **×** buttons. Available project/task context is
+  compact; expand **Details** (or **View message**) for the full text.
 - **Stop sound** calls `POST /silence/{id}` and retains the status for reference.
 - **×** calls `POST /dismiss/{id}` and removes only that row. The window stays open
   while other entries remain; clearing the last entry hides it.

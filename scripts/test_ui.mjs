@@ -117,3 +117,43 @@ test('clear failures stay on their row and offline updates preserve both rows', 
   page.update([]);
   assert.equal(page.element('empty').hidden, false);
 });
+
+test('context adds a compact project and task preview with full optional details', async () => {
+  const context = { cwd: '/workspace/notifier', repo_name: 'Desktop Notify', repo_description: 'Agent notifications.', current_ask: 'Add context fields', work_arc: 'Make several agents easier to follow' };
+  const page = await ui([notification('a', { title: 'notifier: Which layout?', context })]);
+  const row = page.row('a');
+  assert.equal(row.find('project').textContent, 'Desktop Notify');
+  assert.equal(row.find('task-title').textContent, 'Which layout?');
+  assert.equal(row.find('context-preview').textContent, 'Task · Add context fields');
+  assert.equal(row.find('summary').textContent, 'Details');
+  assert.ok(!row.find('details').open);
+  for (const [field, value] of Object.entries(context)) {
+    assert.equal(row.find(`context-${field}`).hidden, false);
+    assert.equal(row.find(`context-${field}`).find('context-value').textContent, value);
+  }
+});
+
+test('partial and absent context fall back without empty labels or invented repo names', async () => {
+  const page = await ui([notification(), notification('b', { context: { cwd: '/workspace/example/', work_arc: 'Ship the app' } })]);
+  assert.equal(page.row('a').find('project').hidden, true);
+  assert.equal(page.row('a').find('context-preview').hidden, true);
+  assert.equal(page.row('a').find('session-context').hidden, true);
+  assert.equal(page.row('a').find('summary').textContent, 'View message');
+  assert.equal(page.row('a').find('task-title').textContent, 'Task');
+  assert.equal(page.row('b').find('project').textContent, 'example');
+  assert.equal(page.row('b').find('context-preview').textContent, 'Work · Ship the app');
+  assert.equal(page.row('b').find('context-repo_description').hidden, true);
+  assert.equal(page.row('b').find('context-current_ask').hidden, true);
+});
+
+test('context changes and literal markup update safely without collapsing details', async () => {
+  const page = await ui([notification('a', { context: { work_arc: 'Earlier work' } })]);
+  const row = page.row('a');
+  row.find('details').open = true;
+  const literal = '<img src=x onerror="alert(1)">';
+  page.update([notification('a', { context: { repo_name: literal, work_arc: '', current_ask: literal } })]);
+  assert.equal(row.find('details').open, true);
+  assert.equal(row.find('project').textContent, literal);
+  assert.equal(row.find('context-current_ask').find('context-value').textContent, literal);
+  assert.equal(row.find('context-work_arc').hidden, true);
+});

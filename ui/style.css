@@ -21,9 +21,17 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 5px 16px; }
 .notification[data-kind="all_tasks_finished"] { --accent: #7cdbad; }
 .row-heading { display: flex; align-items: flex-start; gap: 12px; }
 .row-info { flex: 1; min-width: 0; }
-.eyebrow { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 10px; margin-bottom: 5px; font-size: 10px; }
-.kind { color: var(--accent); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
-.session { color: var(--muted); font-variant-numeric: tabular-nums; }
+.eyebrow { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 10px; }
+.kind { color: var(--accent); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; flex-shrink: 0; }
+.session { color: var(--muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.project { color: #b8c8df; font-weight: 600; min-width: 0; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-preview { margin: 5px 0 0; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-context { margin: 12px 0 0; padding-top: 10px; border-top: 1px solid var(--border); }
+.context-field { margin-bottom: 9px; }
+.context-field:last-child { margin-bottom: 0; }
+.context-label { color: var(--muted); font-size: 10px; margin-bottom: 2px; }
+.context-value { margin: 0; color: #afbdd4; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+.context-cwd .context-value { font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .task-title { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .row-controls { display: flex; align-items: center; gap: 6px; flex-shrink: 0; padding-top: 2px; }
 .secondary { padding: 4px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); font-size: 11px; white-space: nowrap; }

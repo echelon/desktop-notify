@@ -34,6 +34,11 @@
       <strong>Stop sound</strong> to silence a row or <strong>×</strong> to clear it.
       Questions take sound priority over completions; other unsilenced entries
       continue sounding when a row is cleared.</p>
+    <p>Optional <code>context</code> fields: <code>cwd</code>, <code>work_arc</code>,
+      <code>current_ask</code>, <code>repo_name</code>, and <code>repo_description</code>.
+      Supplied values update this session; omitted fields retain prior values and
+      empty strings clear them. The app shows a compact project/task preview with
+      full context under <strong>Details</strong>.</p>
     <table>
       <tr><th>Endpoint</th><th>Behavior</th></tr>
       <tr><td><code>POST /awaiting_user_input</code></td><td>Show the question and loop the awaiting sound.</td></tr>

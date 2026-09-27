@@ -10,6 +10,7 @@ import codex_hook as hook
 class HookTests(unittest.TestCase):
     def setUp(self):
         patch.dict(hook.os.environ, {}, clear=True).start()
+        self.context = patch.object(hook, "capture_context", return_value={}).start()
         self.origin = patch.object(hook, "capture_origin", return_value=None).start()
         self.addCleanup(patch.stopall)
 
@@ -49,6 +50,27 @@ class HookTests(unittest.TestCase):
         with patch.dict(hook.os.environ, {"CODEX_THREAD_ID": "shell-thread"}):
             self.assertEqual(hook.notification_for(event)[1]["session_id"], "shell-thread")
             self.assertEqual(hook.notification_for({**event, "session_id": "event-thread"})[1]["session_id"], "event-thread")
+
+    def test_optional_context_reaches_each_notification_request(self):
+        self.context.return_value = {"cwd": "/workspace/demo", "current_ask": "Fix login", "work_arc": "Reliable authentication"}
+        for event in [
+            {"hook_event_name": "Stop"},
+            {"hook_event_name": "PermissionRequest"},
+            {"hook_event_name": "PreToolUse", "tool_name": "request_user_input"},
+        ]:
+            with patch("sys.stdin", io.StringIO(json.dumps(event))), contextlib.redirect_stdout(io.StringIO()), \
+                 patch.object(hook, "ensure_server"), patch.object(hook, "http", return_value={"id": "test"}) as post:
+                hook.main()
+                self.assertEqual(post.call_args.args[1]["context"], self.context.return_value)
+
+    def test_context_failure_cannot_suppress_alert_or_origin(self):
+        self.context.side_effect = OSError("Transcript unavailable")
+        self.origin.return_value = {"terminal_app": "ghostty"}
+        with patch("sys.stdin", io.StringIO('{"hook_event_name":"Stop"}')), contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(hook, "ensure_server"), patch.object(hook, "http", return_value={"id": "test"}) as post:
+            hook.main()
+        self.assertNotIn("context", post.call_args.args[1])
+        self.assertEqual(post.call_args.args[1]["origin"], self.origin.return_value)
 
     def test_completion_has_outcome(self):
         endpoint, payload = hook.notification_for({"hook_event_name": "Stop", "cwd": "/tmp/my-project",
