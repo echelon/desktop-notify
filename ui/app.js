@@ -22,9 +22,8 @@ const STATES = {
 };
 const taskState = (alert) => (STATES[alert.state] ? alert.state : 'done');
 
-// Small agent marks, drawn from fixed geometry (never from row data).
+// Small agent marks use fixed local artwork, never row-provided markup or URLs.
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const round = (n) => Math.round(n * 100) / 100;
 // Claude Code's mascot, from its terminal banner. Each block character is a
 // 2×2 grid of quadrants (upper-left, upper-right, lower-left, lower-right);
 // terminal cells are twice as tall as wide, so each quadrant is 1×2 units.
@@ -32,17 +31,20 @@ const QUADRANTS = { '▐': '0101', '▛': '1110', '█': '1111', '▜': '1101', 
 const CLAUDE_MASCOT = [' ▐▛███▜▌', '▝▜█████▛▘', '  ▘▘ ▝▝'].flatMap((line, row) =>
   [...line].flatMap((char, column) => [...(QUADRANTS[char] || '0000')].flatMap((filled, quadrant) =>
     filled === '1' ? [`M${column * 2 + (quadrant % 2)} ${row * 4 + Math.floor(quadrant / 2) * 2}h1v2h-1z`] : []))).join('');
-const CODEX_SPIRAL = Array.from({ length: 45 }, (_, i) => {
-  const angle = i * 0.25;
-  const radius = 0.4 + angle * 0.58;
-  return `${i ? 'L' : 'M'}${round(8 + radius * Math.cos(angle))} ${round(8 + radius * Math.sin(angle))}`;
-}).join('');
 const AGENTS = {
   claude_code: { label: 'Claude Code', path: CLAUDE_MASCOT, viewBox: '0 0 18 12' },
-  codex: { label: 'Codex', path: CODEX_SPIRAL, viewBox: '0 0 16 16' },
+  codex: { label: 'Codex', src: 'assets/codex.svg' },
 };
 
 function agentMark(agent) {
+  if (AGENTS[agent].src) {
+    const image = document.createElement('img');
+    image.setAttribute('src', AGENTS[agent].src);
+    image.setAttribute('alt', '');
+    image.setAttribute('aria-hidden', 'true');
+    image.setAttribute('class', `agent-mark ${agent}`);
+    return image;
+  }
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('viewBox', AGENTS[agent].viewBox);
   // Wide marks start at the left and center on the text line.

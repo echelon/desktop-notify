@@ -250,7 +250,7 @@ any pending ones.
 ## Features
 
 - **Rows:** one per session, newest first, showing the state label, the agent
-  mark (orange Claude Code mascot or Codex spiral, beside the state), project
+  mark (orange Claude Code mascot or monochrome OpenAI knot for Codex, beside the state), project
   (repo name, else cwd basename), short session ID, title, and a one-line current
   task. Details expand to the full message and context. Text is rendered literally.
 - **Row buttons:** **Focus** returns to the agent's terminal and changes nothing
