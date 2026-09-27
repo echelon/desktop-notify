@@ -263,3 +263,39 @@ test('the app documents its REST interface and opens the web interface', async (
   assert.match(page.row('a').find('acknowledge').title, /POST \/acknowledge\/\{id\}/);
   assert.match(page.row('a').find('clear').title, /POST \/dismiss\/\{id\}/);
 });
+
+test('each row shows a timing line above its details for running, waiting, and finished tasks', async () => {
+  const ago = (ms) => new Date(Date.now() - ms).toISOString().replace('Z', '123456Z');
+  const page = await ui([
+    notification('w', { state: 'working', times: { tracked_since: ago(7200000), task_started_at: ago(252000), updated_at: ago(5000) } }),
+    notification('s', { state: 'working', times: { task_started_at: ago(3 * 3600000 + 5 * 60000), updated_at: ago(2 * 3600000) } }),
+    notification('q', { state: 'input_needed_ignored', times: { task_started_at: ago(600000), waiting_since: ago(125000), dismissed_at: ago(60000) } }),
+    notification('d', { state: 'done', times: { task_started_at: ago(400000), task_finished_at: ago(130000) } }),
+    notification('f', { state: 'failed_acknowledged', times: { task_finished_at: ago(2 * 86400000 + 1000) } }),
+    notification('n', { state: 'done', times: { task_finished_at: ago(10000) } }),
+    notification('legacy', { state: 'done' }),
+  ]);
+  const timing = (id) => page.row(id).find('timing');
+  assert.equal(timing('w').textContent, 'Running for 4m 12s');
+  assert.match(timing('w').title, /First seen: .*\nTask started: .*\nLast agent update: /);
+  assert.equal(timing('s').textContent, 'Running for 3h 5m · last update 2 hours ago');
+  assert.equal(timing('q').textContent, 'Waiting for 2m 5s · task running for 10m 0s');
+  assert.match(timing('q').title, /Dismissed: /);
+  assert.equal(timing('d').textContent, 'Finished 2 minutes ago · ran for 4m 30s');
+  assert.equal(timing('f').textContent, 'Failed 2 days ago');
+  assert.equal(timing('n').textContent, 'Finished less than 1 minute ago');
+  assert.equal(timing('legacy').hidden, true);
+  const children = page.row('d').children;
+  assert.equal(children.indexOf(timing('d')) + 1, children.indexOf(page.row('d').find('details')));
+  const interactions = await ui([notification('i', { state: 'working', times: { user_input_at: ago(1000), user_action_at: ago(2000), last_request_at: ago(1000) } })]);
+  assert.match(interactions.row('i').find('timing').title, /Your last input in the terminal: .*\nYour last action in the app or web: .*\nLast API request: /);
+});
+
+test('timing text follows a session to its replacement row', async () => {
+  const page = await ui([notification('a', { state: 'working', times: { task_started_at: new Date(Date.now() - 61000).toISOString() } })]);
+  assert.equal(page.row('a').find('timing').textContent, 'Running for 1m 1s');
+  const finished = new Date().toISOString();
+  page.update([notification('b', { session_id: 'session-a', state: 'done', times: { task_started_at: new Date(Date.now() - 61000).toISOString(), task_finished_at: finished } })]);
+  assert.equal(page.row('a'), undefined);
+  assert.match(page.row('b').find('timing').textContent, /^Finished less than 1 minute ago · ran for 1m 1s$/);
+});

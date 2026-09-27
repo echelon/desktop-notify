@@ -34,6 +34,7 @@ endpoint) is in the workspace [AGENTS.md](../../AGENTS.md#http-api-current-api-v
 | POST | `/working` | `{session_id, title?, message?, context?, origin?, agent?, only_if_waiting?, tool_use_id?}`; row becomes `working` (no alert). Returns `{updated, notification?}`. |
 | POST | `/acknowledge/{id}` | Dismiss one alerting row; it stays listed in its quiet state. |
 | POST | `/dismiss/{id}` | Clear one row. |
+| POST | `/focused/{id}` | Record that the app focused this row's terminal; changes nothing else. |
 | GET | `/notifications` | All rows, newest first. |
 | GET | `/sound` | `{snoozed_until, alerting}`. |
 | POST, GET | `/sound/stop` | Acknowledge every alerting row and cancel any snooze; rows stay. |
@@ -53,6 +54,16 @@ context, origin, and agent when an update omits them. One shared loop plays for
 the newest `input_needed`, else `failed`, else `done` row. A snooze stores its
 deadline and mutes the loop without changing rows; the next request after it
 passes (the app polls every 400 ms) resumes sound. Rows are held in memory.
+
+Rows also carry optional service-assigned `times` (RFC 3339 UTC): `tracked_since`
+(first report, kept until cleared), `updated_at` (latest agent report, including
+an `only_if_waiting` call that changed nothing), `task_started_at` (the prompt
+that started the current task), `task_finished_at` (`done`/`failed` only),
+`waiting_since` (`input_needed*` only), `dismissed_at` (cleared by the next
+agent update), `last_request_at` (any request touching the row),
+`user_action_at` (Dismiss, Stop sound, or Focus from the app or web), and
+`user_input_at` (a submitted prompt or answered question, from the hooks).
+Moments the service did not see are omitted.
 
 The sound-only `/alert_*` and `/loop_*` endpoints, `GET /notification`,
 `POST /silence/{id}`, and the `kind`/`silenced` row fields were removed in favor

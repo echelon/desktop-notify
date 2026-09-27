@@ -97,7 +97,7 @@ A missing configured sound returns 503.
 | `POST /working` | `{session_id, title?, message?, context?, origin?, agent?, only_if_waiting?, tool_use_id?}` | Row becomes `working` and returns `{updated, notification?}`. With `only_if_waiting`, it only resumes an `input_needed*` row waiting on the same `tool_use_id` (or either is unknown), and never creates a row or revives a finished one. Missing title/message keep the row's text. |
 
 These return the row: `{id, session_id?, state, title, message, context?,
-origin?, agent?}`. Limits: title 1–200 characters, message 1–4000,
+origin?, agent?, times?}`. Limits: title 1–200 characters, message 1–4000,
 `session_id` and `tool_use_id` 1–256 bytes with no control characters. Rows are
 keyed by `session_id`; omitted IDs share one legacy "unassigned" row. Named
 sessions keep `context`, `origin`, and `agent` when an update omits them.
@@ -106,12 +106,36 @@ sessions keep `context`, `origin`, and `agent` when an update omits them.
 `agent` is `claude_code` or `codex`; other values read back as `unknown`.
 `origin` fields are listed under Focus below.
 
+`times` holds service-assigned timestamps (chrono `DateTime<Utc>`, RFC 3339 on
+the wire). Every field is optional and omitted when the service did not observe
+that moment; requests cannot set them. Only named sessions carry them across
+replacements; the unassigned row starts fresh each time.
+
+| Field | Set | Cleared or kept |
+| --- | --- | --- |
+| `tracked_since` | First report for the session | Kept until the row is cleared |
+| `updated_at` | Every agent report, including an `only_if_waiting` call that changed nothing | Dismissals do not touch it |
+| `task_started_at` | `/working` without `only_if_waiting`, unless the row is already `working` (a queued prompt joins the turn) | Kept through `input_needed*`, resume, and `done`/`failed`; unknown (`None`) when the start was not seen |
+| `task_finished_at` | `done`/`failed` | `None` for every other state |
+| `waiting_since` | Entering `input_needed` (kept if already waiting) | `None` outside `input_needed*` |
+| `dismissed_at` | Dismiss or Stop sound | Any agent update |
+| `last_request_at` | Any request that touched the row: agent reports (including no-op ones), Dismiss, Stop sound (rows it quieted), Focus | Kept until the next one |
+| `user_action_at` | Dismiss, Stop sound (rows it quieted), or Focus from the app or web interface | Kept across agent updates |
+| `user_input_at` | Every move to `working`: the hooks send that only for a submitted prompt or an answered question/permission | Kept across agent updates; a finished tool that changed nothing does not set it |
+
+Terminal activity is inferred only from those hook events. The service does not
+watch TTYs or keystrokes.
+
+The app's timing line (and the web interface's) is derived from these: running
+for, waiting for, ran for, and finished/failed "N minutes ago".
+
 **Acting on rows** (used by the app):
 
 | Endpoint | Effect |
 | --- | --- |
 | `POST /acknowledge/{id}` | Dismiss: an alerting row moves to its quiet state and stays listed. Returns `{stopped}`; stale or already-quiet IDs return `false`. |
 | `POST /dismiss/{id}` | Clear: remove that row. Returns `{stopped}`; stale IDs are harmless. |
+| `POST /focused/{id}` | Record that the app focused this row's terminal (`user_action_at`). Changes nothing else. Returns `{recorded}`; stale IDs return `false`. |
 | `POST /stop` | Clear every row, cancel any snooze, and stop all audio. Hooks must never call it. |
 
 **Global sound** (used by the app's sound bar):
@@ -147,6 +171,7 @@ W = web interface at `GET /`, S = `stop-sound` shell alias in
 | `POST /task_failed` | C (StopFailure) |
 | `GET /notifications`, `GET /sound` | A, W (polling) |
 | `POST /acknowledge/{id}`, `/dismiss/{id}`, `/sound/snooze` | A, W (buttons) |
+| `POST /focused/{id}` | A (after the Focus button, best-effort) |
 | `POST /sound/stop` | A, W, S (`curl -fsS -m 1 -X POST http://127.0.0.1:43110/sound/stop`) |
 | `POST /sound/resume` | W |
 | `POST /stop` | W ("Clear all tasks") |
@@ -253,8 +278,12 @@ any pending ones.
   mark (orange Claude Code mascot or monochrome OpenAI knot for Codex, beside the state), project
   (repo name, else cwd basename), short session ID, title, and a one-line current
   task. Details expand to the full message and context. Text is rendered literally.
+  Above Details is a live timing line from `times` ("Running for 4m 12s",
+  "Waiting for 2m 5s · task running for 10m 0s", "Finished 2 minutes ago · ran
+  for 4m 30s"), refreshed every second; its tooltip lists the exact timestamps.
+  A working row whose agent has been silent for a minute adds "last update …".
 - **Row buttons:** **Focus** returns to the agent's terminal and changes nothing
-  else. **Dismiss** (alerting rows only) acknowledges that row; others keep
+  else (afterwards it only reports the time through `POST /focused/{id}`). **Dismiss** (alerting rows only) acknowledges that row; others keep
   alerting. **×** (Clear) removes the row.
 - **Web interface** (`GET /`): the same tasks and sound controls in a browser,
   plus Clear all, Resume, the REST reference, curl examples, and a "last request"

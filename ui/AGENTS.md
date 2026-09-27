@@ -22,7 +22,8 @@ Use two-space JavaScript indentation and follow the existing CSS style/tokens.
 ## Product behavior
 
 - Keep Focus, Dismiss, Stop sound, Clear, and Hide distinct. Focus must not invoke
-  hide, acknowledge, or clear. Dismiss (`acknowledge_notification`) appears only on
+  hide, acknowledge, or clear. (The native command reports `POST /focused/{id}`
+  afterwards, which only records a timestamp.) Dismiss (`acknowledge_notification`) appears only on
   alerting rows and acknowledges that row alone. Stop sound and Snooze are global
   controls in the bar above the footer; they retain every row. Clear (×) removes
   only its row. Hide and keyboard shortcuts only hide the window.
@@ -37,6 +38,9 @@ Use two-space JavaScript indentation and follow the existing CSS style/tokens.
 - Keep the compact hierarchy: project label, alert title, one ellipsized task
   line, then expandable full message/context. Prefer repo name over cwd basename
   for the project and current ask over work arc for the preview.
+- Each row shows a timing line above its details, built from the service's `times`; the
+  one-second interval rewrites it only when the text changes. Omit parts whose
+  timestamps are absent, and hide the line entirely for rows without times.
 - Hide absent context without placeholder noise; title/message-only alerts still
   work. Avoid repeating a known directory prefix in both title and project label.
   Make full text and paths available in details/tooltips.

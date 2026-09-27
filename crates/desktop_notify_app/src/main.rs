@@ -69,9 +69,13 @@ async fn focus_notification(
       .clone()
       .ok_or("This notification has no terminal information.")?
   };
-  tauri::async_runtime::spawn_blocking(move || focus::focus(&origin))
+  let result = tauri::async_runtime::spawn_blocking(move || focus::focus(&origin))
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+  // Afterwards, so recording never delays focusing. It only stamps the row's
+  // `user_action_at`; an offline service or a replaced row is not an error.
+  let _ = update_notification(&id, "focused", &state).await;
+  result
 }
 
 #[tauri::command]

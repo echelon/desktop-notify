@@ -33,6 +33,7 @@ fn routes(cfg: &mut web::ServiceConfig) {
     .route("/working", web::post().to(working))
     .route("/task_failed", web::post().to(task_failed))
     .route("/acknowledge/{id}", web::post().to(acknowledge))
+    .route("/focused/{id}", web::post().to(focused))
     .route("/sound", web::get().to(sound))
     .route("/sound/snooze", web::post().to(snooze))
     .route("/sound/resume", web::post().to(resume_sound))
@@ -584,6 +585,19 @@ async fn legacy_stop_sound_preserves_rows_focus_and_waiting_tools() {
       test::TestRequest::get().uri("/notifications").to_request(),
     )
     .await;
+    for (row, expected) in rows.iter().zip(&mut expected) {
+      // Stopping sound records the dismissal on each row it quieted.
+      assert_eq!(
+        row.times.dismissed_at.is_some(),
+        expected.state != TaskState::Working
+      );
+      assert_eq!(row.times.user_action_at, row.times.dismissed_at);
+      expected.times.dismissed_at = row.times.dismissed_at;
+      expected.times.user_action_at = row.times.user_action_at;
+      if row.times.dismissed_at.is_some() {
+        expected.times.last_request_at = row.times.dismissed_at;
+      }
+    }
     assert_eq!(rows, expected); // IDs, order, text, context and Focus targets survive.
     assert_eq!(state.notifications.lock().unwrap().waiting_tools, waiting);
     assert!(commands
@@ -941,4 +955,193 @@ async fn the_reporting_agent_is_optional_and_kept_across_updates() {
   assert!(!serde_json::to_string(&unassigned)
     .unwrap()
     .contains("agent"));
+}
+
+fn times(state: &web::Data<ServerState>, session: &str) -> notify_types::TaskTimes {
+  let current = state.notifications.lock().unwrap();
+  current
+    .active
+    .iter()
+    .find(|n| n.session_id.as_deref() == Some(session))
+    .map(|n| n.times.clone())
+    .unwrap()
+}
+
+#[actix_web::test]
+async fn timestamps_follow_a_task_through_waiting_finishing_and_dismissal() {
+  let (state, _commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  let before = Utc::now();
+  test::call_service(
+    &app,
+    working_request(r#"{"session_id":"a","title":"Build","message":"Build it"}"#).to_request(),
+  )
+  .await;
+  let first = times(&state, "a");
+  let started = first.task_started_at.unwrap();
+  assert!(started >= before);
+  assert_eq!(first.tracked_since, Some(started));
+  assert_eq!(first.updated_at, Some(started));
+  // Submitting the prompt was the user's input; nothing came from the app yet.
+  assert_eq!(first.user_input_at, Some(started));
+  assert_eq!(first.last_request_at, Some(started));
+  assert_eq!(first.user_action_at, None);
+  assert_eq!(
+    (
+      first.task_finished_at,
+      first.waiting_since,
+      first.dismissed_at
+    ),
+    (None, None, None)
+  );
+
+  // A prompt queued mid-turn joins the running task.
+  test::call_service(
+    &app,
+    working_request(r#"{"session_id":"a","title":"Also","message":"And this"}"#).to_request(),
+  )
+  .await;
+  assert_eq!(times(&state, "a").task_started_at, Some(started));
+
+  // Waiting keeps the task's start and records when waiting began; dismissing
+  // the question records that without counting as an agent update.
+  let question: Notification =
+    test::call_and_read_body_json(&app, alert_request("awaiting_user_input", "a").to_request())
+      .await;
+  let waiting = question.times.waiting_since.unwrap();
+  assert_eq!(question.times.task_started_at, Some(started));
+  assert_eq!(question.times.task_finished_at, None);
+  test::call_service(
+    &app,
+    test::TestRequest::post()
+      .uri(&format!("/acknowledge/{}", question.id))
+      .to_request(),
+  )
+  .await;
+  let ignored = times(&state, "a");
+  assert!(ignored.dismissed_at.unwrap() >= waiting);
+  assert_eq!(ignored.updated_at, question.times.updated_at);
+  assert_eq!(ignored.user_action_at, ignored.dismissed_at);
+  assert_eq!(ignored.last_request_at, ignored.dismissed_at);
+  assert_eq!(ignored.user_input_at, question.times.user_input_at);
+  assert_eq!(ignored.waiting_since, Some(waiting));
+
+  // Resuming continues the task and clears the waiting/dismissal marks.
+  test::call_service(
+    &app,
+    working_request(r#"{"session_id":"a","only_if_waiting":true}"#).to_request(),
+  )
+  .await;
+  let resumed = times(&state, "a");
+  assert_eq!(resumed.task_started_at, Some(started));
+  assert_eq!((resumed.waiting_since, resumed.dismissed_at), (None, None));
+  // Answering the question is terminal input; the earlier dismissal is kept.
+  assert_eq!(resumed.user_input_at, resumed.updated_at);
+  assert_eq!(resumed.user_action_at, ignored.user_action_at);
+
+  // A finished tool that changes nothing still counts as news from the agent.
+  test::call_service(
+    &app,
+    working_request(r#"{"session_id":"a","only_if_waiting":true}"#).to_request(),
+  )
+  .await;
+  let tool = times(&state, "a");
+  assert!(tool.updated_at >= resumed.updated_at);
+  assert_eq!(tool.last_request_at, tool.updated_at);
+  assert_eq!(tool.task_started_at, Some(started));
+  // A finished tool is the agent's own progress, not user input.
+  assert_eq!(tool.user_input_at, resumed.user_input_at);
+
+  let done: Notification =
+    test::call_and_read_body_json(&app, alert_request("all_tasks_finished", "a").to_request())
+      .await;
+  assert_eq!(done.times.task_started_at, Some(started));
+  assert_eq!(done.times.task_finished_at, done.times.updated_at);
+  assert_eq!(done.times.tracked_since, Some(started));
+  test::call_service(
+    &app,
+    test::TestRequest::post().uri("/sound/stop").to_request(),
+  )
+  .await;
+  assert!(times(&state, "a").dismissed_at.is_some());
+
+  // The next prompt starts a new task; only the first-seen time endures.
+  test::call_service(
+    &app,
+    working_request(r#"{"session_id":"a","title":"Next","message":"Next task"}"#).to_request(),
+  )
+  .await;
+  let next = times(&state, "a");
+  assert!(next.task_started_at.unwrap() >= done.times.task_finished_at.unwrap());
+  assert_eq!(next.tracked_since, Some(started));
+  assert_eq!((next.task_finished_at, next.dismissed_at), (None, None));
+}
+
+#[actix_web::test]
+async fn unobserved_task_starts_stay_unknown_and_sessions_keep_their_own_times() {
+  let (state, _commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  let failed: Notification =
+    test::call_and_read_body_json(&app, alert_request("task_failed", "a").to_request()).await;
+  assert_eq!(failed.times.task_started_at, None);
+  assert!(failed.times.task_finished_at.is_some());
+  test::call_service(
+    &app,
+    working_request(r#"{"session_id":"b","title":"Other","message":"Other task"}"#).to_request(),
+  )
+  .await;
+  assert_eq!(times(&state, "a"), failed.times);
+  // A later alert for a finished task does not inherit the finished task's start.
+  test::call_service(&app, alert_request("all_tasks_finished", "b").to_request()).await;
+  let finished = times(&state, "b");
+  test::call_service(&app, alert_request("all_tasks_finished", "b").to_request()).await;
+  assert_eq!(times(&state, "b").task_started_at, None);
+  assert_eq!(times(&state, "b").tracked_since, finished.tracked_since);
+  // Clearing a row forgets its history.
+  let row = state.notifications.lock().unwrap().active[0].id.clone();
+  test::call_service(
+    &app,
+    test::TestRequest::post()
+      .uri(&format!("/dismiss/{row}"))
+      .to_request(),
+  )
+  .await;
+  test::call_service(&app, alert_request("all_tasks_finished", "b").to_request()).await;
+  assert!(times(&state, "b").tracked_since > finished.tracked_since);
+}
+
+#[actix_web::test]
+async fn focusing_records_a_user_action_without_changing_the_row() {
+  let (state, commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  let done: Notification =
+    test::call_and_read_body_json(&app, alert_request("all_tasks_finished", "a").to_request())
+      .await;
+  let other: Notification =
+    test::call_and_read_body_json(&app, alert_request("all_tasks_finished", "b").to_request())
+      .await;
+  while commands.try_recv().is_ok() {}
+  let focus = |id: &str| {
+    test::TestRequest::post()
+      .uri(&format!("/focused/{id}"))
+      .to_request()
+  };
+  let response: serde_json::Value = test::call_and_read_body_json(&app, focus(&done.id)).await;
+  assert_eq!(response, serde_json::json!({"recorded": true}));
+  let focused = state.notifications.lock().unwrap().active[1].clone();
+  let action = focused.times.user_action_at.unwrap();
+  assert_eq!(focused.times.last_request_at, Some(action));
+  // Only the timestamps moved: same ID, state, order, and sound.
+  let mut expected = done.clone();
+  expected.times.user_action_at = Some(action);
+  expected.times.last_request_at = Some(action);
+  assert_eq!(focused, expected);
+  assert_eq!(state.notifications.lock().unwrap().active[0], other);
+  assert!(commands.try_recv().is_err());
+  // Stale IDs are harmless, and later agent updates keep the last action.
+  let response: serde_json::Value = test::call_and_read_body_json(&app, focus("stale")).await;
+  assert_eq!(response, serde_json::json!({"recorded": false}));
+  test::call_service(&app, alert_request("awaiting_user_input", "a").to_request()).await;
+  assert_eq!(times(&state, "a").user_action_at, Some(action));
+  assert!(times(&state, "a").last_request_at > Some(action));
 }

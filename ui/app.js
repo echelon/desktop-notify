@@ -109,8 +109,10 @@ function createRow(alert) {
   details.append(summary, message, context);
   const status = element('p', 'focus-status');
   status.setAttribute('role', 'status');
-  row.append(heading, details, status);
-  return { row, agent, kind, project, session, title, preview, summary, context, fields, focus, acknowledge, clear, message, status };
+  const timing = element('p', 'timing');
+  // Timing sits between the task line and the expandable details.
+  row.append(heading, timing, details, status);
+  return { row, agent, kind, project, session, title, preview, summary, context, fields, focus, acknowledge, clear, message, status, timing };
 }
 
 const optionalText = (value) => typeof value === 'string' ? value.trim() : '';
@@ -143,6 +145,79 @@ function renderContext(refs, alert) {
   }
   refs.context.hidden = !hasContext;
   refs.summary.textContent = hasContext ? 'Details' : 'View message';
+}
+
+/* Timestamps come from the service (RFC 3339 UTC). They are compared with the
+   local clock once a second so the timing line stays current between polls. */
+const MINUTE = 60000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+// WebKit's Date.parse is unreliable past millisecond precision; chrono sends up to nanoseconds.
+const parseTime = (value) => typeof value === 'string' ? Date.parse(value.replace(/(\.\d{3})\d+/, '$1')) : NaN;
+const plural = (count, unit) => `${count} ${unit}${count === 1 ? '' : 's'}`;
+
+function timeAgo(ms) {
+  if (ms < MINUTE) return 'less than 1 minute ago';
+  if (ms < HOUR) return `${plural(Math.floor(ms / MINUTE), 'minute')} ago`;
+  if (ms < DAY) return `${plural(Math.floor(ms / HOUR), 'hour')} ago`;
+  return `${plural(Math.floor(ms / DAY), 'day')} ago`;
+}
+
+function formatDuration(ms) {
+  const seconds = Math.floor(Math.max(0, ms) / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  if (seconds < 60) return `${seconds}s`;
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+const TIME_LABELS = {
+  tracked_since: 'First seen', task_started_at: 'Task started', waiting_since: 'Waiting since', task_finished_at: 'Task ended',
+  dismissed_at: 'Dismissed', updated_at: 'Last agent update', user_input_at: 'Your last input in the terminal',
+  user_action_at: 'Your last action in the app or web', last_request_at: 'Last API request',
+};
+
+/* One line per row: how long the task has run (or ran), how long it has
+   waited, and how long ago it ended. Unknown moments are left out. */
+function timingText(alert, now) {
+  const times = alert.times || {};
+  const at = Object.fromEntries(Object.keys(TIME_LABELS).map((key) => [key, parseTime(times[key])]));
+  const since = (time) => Math.max(0, now - time);
+  const parts = [];
+  const state = taskState(alert);
+  if (state === 'working') {
+    parts.push(at.task_started_at ? `Running for ${formatDuration(since(at.task_started_at))}` : 'Running');
+    // Quiet agents are worth noticing: the hooks report every finished tool.
+    if (since(at.updated_at) >= MINUTE) parts.push(`last update ${timeAgo(since(at.updated_at))}`);
+  } else if (state.startsWith('input_needed')) {
+    if (at.waiting_since) parts.push(`Waiting for ${formatDuration(since(at.waiting_since))}`);
+    if (at.task_started_at) parts.push(`task running for ${formatDuration(since(at.task_started_at))}`);
+  } else if (at.task_finished_at) {
+    parts.push(`${state.startsWith('failed') ? 'Failed' : 'Finished'} ${timeAgo(since(at.task_finished_at))}`);
+    if (at.task_started_at) parts.push(`ran for ${formatDuration(at.task_finished_at - at.task_started_at)}`);
+  }
+  if (!parts.length && at.updated_at) parts.push(`Updated ${timeAgo(since(at.updated_at))}`);
+  if (parts.length) parts[0] = parts[0][0].toUpperCase() + parts[0].slice(1);
+  const detail = Object.entries(TIME_LABELS).filter(([key]) => at[key])
+    .map(([key, label]) => `${label}: ${new Date(at[key]).toLocaleString()}`).join('\n');
+  return { text: parts.join(' · '), detail };
+}
+
+function renderTiming(refs, alert, now = Date.now()) {
+  const { text, detail } = timingText(alert, now);
+  // Only touch the DOM on change so the once-a-second refresh keeps selections.
+  if (refs.timing.textContent !== text) refs.timing.textContent = text;
+  if (refs.timing.title !== detail) refs.timing.title = detail;
+  refs.timing.hidden = !text;
+}
+
+function renderTimings() {
+  const now = Date.now();
+  for (const alert of snapshot.notifications) {
+    if (rows.has(alert.id)) renderTiming(rows.get(alert.id), alert, now);
+  }
 }
 
 function render(next) {
@@ -189,13 +264,14 @@ function render(next) {
     const canFocus = origin && ['terminal_app', 'app_pid', 'pid', 'terminal_id', 'tty', 'window_id', 'window_title'].some((key) => origin[key]);
     refs.focus.disabled = focusing.has(alert.id) || !canFocus;
     refs.focus.textContent = focusing.has(alert.id) ? 'Focusing…' : 'Focus';
-    refs.focus.title = canFocus ? 'Focus the requesting terminal; keep this entry visible' : 'No terminal information was supplied';
+    refs.focus.title = canFocus ? 'Focus the requesting terminal; keep this entry visible\nPOST /focused/{id} (records the time only)' : 'No terminal information was supplied';
     refs.clear.disabled = pending.has(alert.id) || !next.connected;
     // Only alerting rows can be dismissed; quiet rows are already acknowledged.
     refs.acknowledge.hidden = !STATES[state].alerting;
     refs.acknowledge.disabled = pending.has(alert.id) || !next.connected;
     refs.status.hidden = !statuses.has(alert.id);
     refs.status.textContent = statuses.get(alert.id) || '';
+    renderTiming(refs, alert);
     const list = byId('notifications');
     // Preserve open details, selection and keyboard focus on unchanged updates.
     if (list.children[index] !== refs.row) list.insertBefore(refs.row, list.children[index] || null);
@@ -273,8 +349,8 @@ byId('silence-all').addEventListener('click', () => updateSound('stop_all_sound'
 byId('snooze-1').addEventListener('click', () => updateSound('snooze_sound', { seconds: 60 }));
 byId('snooze-5').addEventListener('click', () => updateSound('snooze_sound', { seconds: 300 }));
 byId('api').addEventListener('click', () => invoke('open_web_interface').catch((error) => { soundError = String(error); renderSound(); }));
-// Refreshes only the countdown text; resuming is decided by the service.
-setInterval(renderSound, 1000);
+// Refreshes only the countdown and timing text; resuming is decided by the service.
+setInterval(() => { renderSound(); renderTimings(); }, 1000);
 byId('hide').addEventListener('click', () => invoke('hide_window'));
 byId('resize').addEventListener('mousedown', (e) => { if (e.button === 0) getCurrentWindow().startResizeDragging('SouthEast'); });
 document.addEventListener('keydown', (e) => {

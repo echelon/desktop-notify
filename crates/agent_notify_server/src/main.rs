@@ -88,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
       .route("/working", web::post().to(working))
       .route("/task_failed", web::post().to(task_failed))
       .route("/acknowledge/{id}", web::post().to(acknowledge))
+      .route("/focused/{id}", web::post().to(focused))
       .route("/sound", web::get().to(sound))
       .route("/sound/snooze", web::post().to(snooze))
       .route("/sound/resume", web::post().to(resume_sound))

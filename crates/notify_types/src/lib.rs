@@ -67,6 +67,56 @@ pub struct Notification {
   pub context: SessionContext,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub origin: Option<Origin>,
+  /// Server-assigned lifecycle timestamps; absent from older services.
+  #[serde(default, skip_serializing_if = "TaskTimes::is_empty")]
+  pub times: TaskTimes,
+}
+
+/// When things happened to a session's row (RFC 3339 UTC on the wire). The
+/// service sets these from its own clock; producers never supply them. Every
+/// field is optional: an unknown moment stays `None` rather than being guessed.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct TaskTimes {
+  /// First report for this session. Kept across every update until the row is
+  /// cleared.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub tracked_since: Option<DateTime<Utc>>,
+  /// Latest report from the agent about this session, including tool
+  /// completions that did not change its state. Dismissals do not count.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub updated_at: Option<DateTime<Utc>>,
+  /// When the current (or most recent) task began: the prompt that started
+  /// it. `None` when the service did not see the task start.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub task_started_at: Option<DateTime<Utc>>,
+  /// When the task ended (`done`/`failed`); `None` while work is ongoing.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub task_finished_at: Option<DateTime<Utc>>,
+  /// When the row began waiting on the user; `None` unless `input_needed*`.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub waiting_since: Option<DateTime<Utc>>,
+  /// When the user dismissed the current alert. Any agent update clears it.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub dismissed_at: Option<DateTime<Utc>>,
+  /// Latest HTTP request that touched this row, from the agent or the user.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub last_request_at: Option<DateTime<Utc>>,
+  /// Latest Dismiss, Stop sound, or Focus on this row from the tray app or web
+  /// interface. Kept across agent updates.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub user_action_at: Option<DateTime<Utc>>,
+  /// Latest input the user gave the agent in its terminal, as reported by the
+  /// hooks: a submitted prompt, or an answer that resumed a waiting row. Kept
+  /// across agent updates.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub user_input_at: Option<DateTime<Utc>>,
+}
+
+impl TaskTimes {
+  pub fn is_empty(&self) -> bool {
+    self == &Self::default()
+  }
 }
 
 /// Global sound controls shared by every row. Alerting rows feed the one
@@ -352,6 +402,23 @@ mod tests {
       serde_json::from_str::<SoundState>("{}").unwrap(),
       SoundState::default()
     );
+  }
+
+  #[test]
+  fn task_times_are_optional_rfc3339_and_omitted_when_unknown() {
+    let old: Notification =
+      serde_json::from_str(r#"{"id":"a","state":"done","title":"t","message":"m"}"#).unwrap();
+    assert!(old.times.is_empty());
+    assert!(!serde_json::to_string(&old).unwrap().contains("times"));
+    let json =
+      r#"{"tracked_since":"2026-09-27T15:04:05Z","task_finished_at":"2026-09-27T15:09:05Z"}"#;
+    let times: TaskTimes = serde_json::from_str(json).unwrap();
+    assert_eq!(
+      times.task_finished_at.unwrap().timestamp() - times.tracked_since.unwrap().timestamp(),
+      300
+    );
+    assert_eq!(times.task_started_at, None);
+    assert_eq!(serde_json::to_string(&times).unwrap(), json);
   }
 
   #[test]

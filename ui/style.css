@@ -54,6 +54,8 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 5px 16px; }
 .summary { color: var(--muted); font-size: 11px; cursor: pointer; width: fit-content; }
 .message { padding-top: 8px; color: #afbdd4; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.65; user-select: text; -webkit-user-select: text; }
 .focus-status { margin: 8px 0 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.timing { margin: 7px 0 0; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.notification[data-state="working"] .timing { color: #aabbd9; }
 .sound-controls { padding: 10px 16px 9px; border-top: 1px solid var(--border); }
 .sound-buttons { display: flex; gap: 8px; }
 .sound-button { flex: 1; min-width: 0; padding: 9px 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

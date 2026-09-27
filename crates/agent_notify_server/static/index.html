@@ -47,6 +47,7 @@
     summary { cursor: pointer; color: var(--muted); }
     .message, .context { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; }
     .context { color: var(--muted); font-size: 12px; }
+    .timing { margin: 6px 0 0; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
     .task-actions { display: flex; gap: 6px; flex-shrink: 0; }
     code, pre { background: var(--code); border-radius: 4px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
     code { padding: 1px 5px; }
@@ -119,12 +120,22 @@
       <code>context</code>: <code>cwd</code>, <code>work_arc</code>, <code>current_ask</code>,
       <code>repo_name</code>, <code>repo_description</code> (blank clears). <code>origin</code> holds
       terminal/tmux focus hints (see <code>AGENTS.md</code>).</p>
+    <p class="muted">Rows also carry service-assigned <code>times</code> (RFC 3339 UTC, each omitted when
+      unknown): <code>tracked_since</code> (first report, kept until the row is cleared),
+      <code>updated_at</code> (latest agent report, including finished tools that changed nothing),
+      <code>task_started_at</code> (prompt that started the current task), <code>task_finished_at</code>
+      (<code>done</code>/<code>failed</code> only), <code>waiting_since</code> (<code>input_needed*</code>
+      only), <code>dismissed_at</code> (cleared by the next agent update), <code>last_request_at</code>
+      (any request touching the row), <code>user_action_at</code> (Dismiss, Stop sound, or Focus here or in
+      the app), and <code>user_input_at</code> (a prompt or answer in the terminal, from the hooks).
+      Requests cannot set them. Hover a task's timing line for all of them.</p>
 
     <h3>Act on tasks</h3>
     <div class="table-wrap"><table>
       <tr><th>Endpoint</th><th>Effect</th></tr>
       <tr><td><code>POST /acknowledge/{id}</code></td><td>Dismiss: an alerting row goes quiet and stays listed. <code>{stopped}</code></td></tr>
       <tr><td><code>POST /dismiss/{id}</code></td><td>Clear: remove the row. <code>{stopped}</code>; stale IDs are harmless</td></tr>
+      <tr><td><code>POST /focused/{id}</code></td><td>Tray app reports a Focus; records <code>user_action_at</code> only. <code>{recorded}</code></td></tr>
       <tr><td><code>POST /stop</code></td><td>Clear every row, cancel any snooze, stop all audio</td></tr>
     </table></div>
 
@@ -235,7 +246,9 @@ function renderTasks() {
     details.append(el('summary', '', 'Details'), el('p', 'message', row.message));
     const lines = Object.entries(context).filter(([, value]) => value).map(([key, value]) => `${key}: ${value}`);
     if (lines.length) details.append(el('p', 'context', lines.join('\n')));
-    info.append(details);
+    const timing = el('p', 'timing');
+    timing.dataset.id = row.id;
+    info.append(timing, details);
     const actions = el('div', 'task-actions');
     if (isAlerting) {
       const dismiss = el('button', '', 'Dismiss');
@@ -251,6 +264,50 @@ function renderTasks() {
     task.append(head);
     return task;
   }));
+}
+
+/* Service timestamps compared with the local clock on every refresh. */
+const MINUTE = 60000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
+const parseTime = (value) => typeof value === 'string' ? Date.parse(value.replace(/(\.\d{3})\d+/, '$1')) : NaN;
+const plural = (count, unit) => `${count} ${unit}${count === 1 ? '' : 's'}`;
+const timeAgo = (ms) => ms < MINUTE ? 'less than 1 minute ago' : ms < HOUR ? `${plural(Math.floor(ms / MINUTE), 'minute')} ago`
+  : ms < DAY ? `${plural(Math.floor(ms / HOUR), 'hour')} ago` : `${plural(Math.floor(ms / DAY), 'day')} ago`;
+function formatDuration(ms) {
+  const seconds = Math.floor(Math.max(0, ms) / 1000), minutes = Math.floor(seconds / 60), hours = Math.floor(minutes / 60);
+  if (seconds < 60) return `${seconds}s`;
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+function timingText(row, now) {
+  const times = row.times || {};
+  const at = (key) => parseTime(times[key]);
+  const since = (key) => Math.max(0, now - at(key));
+  const parts = [];
+  if (row.state === 'working') {
+    parts.push(at('task_started_at') ? `Running for ${formatDuration(since('task_started_at'))}` : 'Running');
+    if (since('updated_at') >= MINUTE) parts.push(`last update ${timeAgo(since('updated_at'))}`);
+  } else if (row.state.startsWith('input_needed')) {
+    if (at('waiting_since')) parts.push(`Waiting for ${formatDuration(since('waiting_since'))}`);
+    if (at('task_started_at')) parts.push(`task running for ${formatDuration(since('task_started_at'))}`);
+  } else if (at('task_finished_at')) {
+    parts.push(`${row.state.startsWith('failed') ? 'Failed' : 'Finished'} ${timeAgo(since('task_finished_at'))}`);
+    if (at('task_started_at')) parts.push(`ran for ${formatDuration(at('task_finished_at') - at('task_started_at'))}`);
+  }
+  if (at('tracked_since')) parts.push(`first seen ${timeAgo(since('tracked_since'))}`);
+  if (parts.length) parts[0] = parts[0][0].toUpperCase() + parts[0].slice(1);
+  return parts.join(' · ');
+}
+function renderTimings() {
+  const now = Date.now();
+  for (const row of snapshot.rows) {
+    const node = document.querySelector(`.timing[data-id="${CSS.escape(row.id)}"]`);
+    if (!node) continue;
+    const text = timingText(row, now);
+    if (node.textContent !== text) node.textContent = text;
+    node.title = Object.entries(row.times || {}).map(([key, value]) => `${key}: ${new Date(parseTime(value)).toLocaleString()}`).join('\n');
+    node.hidden = !text;
+  }
 }
 
 let lastRows = '';
@@ -269,6 +326,7 @@ async function refresh() {
     byId('connection').textContent = 'Service unavailable';
   }
   renderSound();
+  renderTimings();
 }
 
 byId('stop-sound').addEventListener('click', () => call('POST', '/sound/stop'));

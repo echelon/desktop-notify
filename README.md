@@ -41,7 +41,7 @@ The status endpoints (`/awaiting_user_input`, `/all_tasks_finished`,
 `/task_failed`) require nonblank `title` (up to 200 characters) and `message` (up
 to 4,000), and accept optional `session_id` (nonblank, up to 256 bytes, no
 control characters), `context`, `origin`, and `agent`. They return `{id,
-session_id?, state, title, message, context?, origin?, agent?}`. Each session has
+session_id?, state, title, message, context?, origin?, agent?, times?}`. Each session has
 one row: an update replaces only that session's row with a fresh `id` and its new
 state. Requests without `session_id` share one unassigned row. Rows are ordered
 by most recent update and live in memory until cleared or the server restarts.
@@ -52,6 +52,13 @@ by most recent update and live in memory until cleared or the server restarts.
 - `agent` is `claude_code` or `codex` (unrecognized values read back as
   `unknown`). A row keeps its agent when an update omits it, and the app shows a
   small Claude or Codex mark beside the state.
+- `times` holds optional service-assigned RFC 3339 timestamps: `tracked_since`,
+  `updated_at`, `task_started_at`, `task_finished_at`, `waiting_since`,
+  `dismissed_at`, `last_request_at`, `user_action_at` (Dismiss/Stop sound/Focus in
+  the app or web), and `user_input_at` (a prompt or answer in the terminal, from
+  the hooks). The app and web interface turn them into a live timing line
+  at the bottom of each row (running for, waiting for, ran for, finished N
+  minutes ago).
 - `POST /working` marks a session busy (from a submitted prompt, or with
   `only_if_waiting` after the user answers).
 - `POST /acknowledge/{id}` (Dismiss) quiets one alerting row, which stays listed.

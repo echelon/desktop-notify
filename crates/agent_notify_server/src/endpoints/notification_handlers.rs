@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::audio_player::LoopSpec;
 use crate::notifications::{DesktopStatus, Notification, NotificationState};
 use crate::server_state::ServerState;
-use notify_types::TaskState;
+use notify_types::{TaskState, TaskTimes};
 
 #[derive(Deserialize)]
 pub struct NotificationRequest {
@@ -117,27 +117,90 @@ fn fresh_id() -> String {
   format!("{:032x}", rand::random::<u128>())
 }
 
+/// Timestamps for a session's replacement row. `previous` is the named session's
+/// earlier row; unassigned rows come from unrelated callers and start fresh.
+/// `new_prompt` marks a submitted prompt, which starts a task unless one is
+/// already running (a prompt queued mid-turn joins that turn). Moments the
+/// service did not observe stay `None` instead of being guessed.
+fn next_times(
+  previous: Option<&Notification>,
+  state: TaskState,
+  new_prompt: bool,
+  now: DateTime<Utc>,
+) -> TaskTimes {
+  // Working and waiting rows belong to a task that has not finished yet.
+  let ongoing = previous.filter(|p| p.state == TaskState::Working || p.state.is_waiting());
+  let started = ongoing.and_then(|p| p.times.task_started_at);
+  let task_started_at = if new_prompt && state == TaskState::Working {
+    match ongoing {
+      Some(p) if p.state == TaskState::Working => started.or(Some(now)),
+      _ => Some(now),
+    }
+  } else {
+    started
+  };
+  let kept =
+    |field: fn(&TaskTimes) -> Option<DateTime<Utc>>| previous.and_then(|p| field(&p.times));
+  let waiting_since = (state == TaskState::InputNeeded).then(|| {
+    previous
+      .filter(|p| p.state.is_waiting())
+      .and_then(|p| p.times.waiting_since)
+      .unwrap_or(now)
+  });
+  TaskTimes {
+    tracked_since: Some(kept(|t| t.tracked_since).unwrap_or(now)),
+    updated_at: Some(now),
+    task_started_at,
+    task_finished_at: matches!(state, TaskState::Done | TaskState::Failed).then_some(now),
+    waiting_since,
+    dismissed_at: None,
+    last_request_at: Some(now),
+    user_action_at: kept(|t| t.user_action_at),
+    // Hooks only move a row to `working` when the user submits a prompt or a
+    // waiting question/permission is answered, so both count as user input.
+    user_input_at: if state == TaskState::Working {
+      Some(now)
+    } else {
+      kept(|t| t.user_input_at)
+    },
+  }
+}
+
+/// Records a tray-app or web-interface action on a row. It never counts as an
+/// agent update, so `updated_at` is left alone.
+fn record_user_action(notification: &mut Notification, now: DateTime<Utc>) {
+  notification.times.user_action_at = Some(now);
+  notification.times.last_request_at = Some(now);
+}
+
 /// Replaces the session's row with `notification` at the front. Named sessions
-/// keep their context, origin, and agent unless the update supplies them. Any tool the
-/// previous row waited on is forgotten; `waiting_on` records the new one.
+/// keep their context, origin, agent, and timestamps unless the update supplies
+/// them. Any tool the previous row waited on is forgotten; `waiting_on` records
+/// the new one.
 fn replace_row(
   current: &mut NotificationState,
   mut notification: Notification,
   context: Option<notify_types::SessionContext>,
   waiting_on: Option<String>,
+  new_prompt: bool,
 ) -> Notification {
+  let now = Utc::now();
   if let Some(session) = &notification.session_id {
     match waiting_on {
       Some(tool) => current.waiting_tools.insert(session.clone(), tool),
       None => current.waiting_tools.remove(session),
     };
   }
-  if let Some(index) = current
+  let previous = current
     .active
     .iter()
     .position(|n| n.session_id == notification.session_id)
-  {
-    let previous = current.active.remove(index);
+    .map(|index| current.active.remove(index));
+  let named = previous
+    .as_ref()
+    .filter(|_| notification.session_id.is_some());
+  notification.times = next_times(named, notification.state, new_prompt, now);
+  if let Some(previous) = previous {
     log::info!(
       "session {:?}: {:?} -> {:?}",
       notification.session_id,
@@ -188,6 +251,7 @@ fn notify(state: &ServerState, request: NotificationRequest, task: TaskState) ->
     message: message.into(),
     context: Default::default(),
     origin: request.origin,
+    times: Default::default(),
   };
   // Serialize replacement and dismissal with their corresponding audio command.
   let mut current = state
@@ -197,7 +261,13 @@ fn notify(state: &ServerState, request: NotificationRequest, task: TaskState) ->
   let waiting_on = request
     .tool_use_id
     .filter(|_| task == TaskState::InputNeeded);
-  let notification = replace_row(&mut current, notification, request.context, waiting_on);
+  let notification = replace_row(
+    &mut current,
+    notification,
+    request.context,
+    waiting_on,
+    false,
+  );
   reconcile_audio(state, &mut current);
   HttpResponse::Ok().json(notification)
 }
@@ -260,6 +330,17 @@ pub async fn working(
     .iter()
     .find(|n| n.session_id.as_deref() == Some(request.session_id.as_str()));
   if request.only_if_waiting && (other_tool || !previous.is_some_and(|n| n.state.is_waiting())) {
+    // A finished tool is still news from the agent: record when it was heard
+    // without replacing the row, changing its state, or creating one.
+    if let Some(row) = current
+      .active
+      .iter_mut()
+      .find(|n| n.session_id.as_deref() == Some(request.session_id.as_str()))
+    {
+      let now = Utc::now();
+      row.times.updated_at = Some(now);
+      row.times.last_request_at = Some(now);
+    }
     return HttpResponse::Ok().json(WorkingResponse {
       updated: false,
       notification: None,
@@ -292,8 +373,15 @@ pub async fn working(
     message,
     context: Default::default(),
     origin: request.origin,
+    times: Default::default(),
   };
-  let notification = replace_row(&mut current, notification, request.context, None);
+  let notification = replace_row(
+    &mut current,
+    notification,
+    request.context,
+    None,
+    !request.only_if_waiting,
+  );
   reconcile_audio(&state, &mut current);
   HttpResponse::Ok().json(WorkingResponse {
     updated: true,
@@ -407,10 +495,33 @@ pub async fn acknowledge(state: web::Data<ServerState>, id: web::Path<String>) -
       notification.session_id,
       notification.state
     );
+    let now = Utc::now();
     notification.state = quiet;
+    notification.times.dismissed_at = Some(now);
+    record_user_action(notification, now);
     reconcile_audio(&state, &mut current);
   }
   HttpResponse::Ok().json(DismissResponse { stopped })
+}
+
+#[derive(Serialize)]
+struct FocusedResponse {
+  recorded: bool,
+}
+
+/// The tray app focuses terminals itself; this only records that the user
+/// did so. It changes no state, sound, or ordering, and stale IDs are harmless.
+pub async fn focused(state: web::Data<ServerState>, id: web::Path<String>) -> HttpResponse {
+  let mut current = state
+    .notifications
+    .lock()
+    .unwrap_or_else(|e| e.into_inner());
+  let row = current.active.iter_mut().find(|n| n.id == *id);
+  let recorded = row.is_some();
+  if let Some(notification) = row {
+    record_user_action(notification, Utc::now());
+  }
+  HttpResponse::Ok().json(FocusedResponse { recorded })
 }
 
 pub async fn sound(state: web::Data<ServerState>) -> HttpResponse {
@@ -425,9 +536,12 @@ pub async fn stop_sound(state: web::Data<ServerState>) -> HttpResponse {
     .notifications
     .lock()
     .unwrap_or_else(|e| e.into_inner());
+  let now = Utc::now();
   for notification in &mut current.active {
     if let Some(quiet) = notification.state.acknowledged() {
       notification.state = quiet;
+      notification.times.dismissed_at = Some(now);
+      record_user_action(notification, now);
     }
   }
   current.snoozed_until = None;
