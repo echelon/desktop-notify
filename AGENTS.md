@@ -118,6 +118,11 @@ A restart discards in-memory rows, so re-post any pending ones.
 field names) and posts `{title, message, session_id, context, origin}`:
 
 - `session_id` comes from the event and identifies the row, one per agent session.
+- `agent` (`claude_code`/`codex`) is self-reported: the installer writes
+  `--agent <name>` into each agent's hook command. Otherwise the hook falls back
+  to `NOTIFY_AGENT`, then the agent's own environment (`CLAUDECODE`, `AI_AGENT`,
+  `CODEX_THREAD_ID`), then the transcript location. Direct API callers set `agent`
+  in the JSON body. Rows keep their agent when an update omits it.
 - `message`: the event's `last_assistant_message` for Stop. Claude Code may omit
   it, in which case the hook uses the newest assistant text in `transcript_path`.
 - `context` (`notification_context.py`) holds the cwd, repo name/description

@@ -171,6 +171,40 @@ def record(entry):
         pass
 
 
+AGENTS = ("claude_code", "codex")
+
+
+def self_reported_agent(argv=None):
+    """The installer writes `--agent <name>` into each agent's hook command."""
+    argv = sys.argv[1:] if argv is None else argv
+    for flag, value in zip(argv, argv[1:]):
+        if flag == "--agent" and value in AGENTS:
+            return value
+    return None
+
+
+def detect_agent(event, env=None, argv=None):
+    """Which agent ran this hook: its self-report first, then an explicit
+    override, then the agent's own environment and transcript markers."""
+    env = os.environ if env is None else env
+    reported = self_reported_agent(argv)
+    if reported:
+        return reported
+    if env.get("NOTIFY_AGENT") in AGENTS:
+        return env["NOTIFY_AGENT"]
+    ai_agent = env.get("AI_AGENT", "")
+    if env.get("CLAUDECODE") == "1" or ai_agent.startswith("claude-code"):
+        return "claude_code"
+    if env.get("CODEX_THREAD_ID") or ai_agent.startswith("codex"):
+        return "codex"
+    transcript = str(event.get("transcript_path") or "")
+    if "/.claude/" in transcript:
+        return "claude_code"
+    if "/.codex/" in transcript:
+        return "codex"
+    return None
+
+
 def closing_paragraph(message):
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", plain(message)) if p.strip()]
     return paragraphs[-1] if paragraphs else ""
@@ -244,6 +278,9 @@ def notification_for(event):
 
 
 def post(event, endpoint, payload):
+    agent = detect_agent(event)
+    if agent:
+        payload["agent"] = agent
     try:
         context = capture_context(event)
         if context:
@@ -273,6 +310,7 @@ def main():
                       if isinstance(event.get(k), str)})
         alert = notification_for(event)
         entry["action"] = alert[0] if alert else "ignored"
+        entry["agent"] = detect_agent(event)
         result = None
         if alert and alert[0] == "/working":
             # Busy updates are informational: never build/start the service (that

@@ -57,6 +57,7 @@
       <tr><td><code>POST /stop</code></td><td>Clear all entries, cancel any snooze, and stop all sounds.</td></tr>
       <tr><td><code>GET /health</code></td><td>Server identity, API version, and PID.</td></tr>
     </table>
+    <p>Optional <code>agent</code>: <code>claude_code</code> or <code>codex</code> (the app shows a small mark for each).</p>
     <p>Title: 1–200 characters. Message: 1–4,000 characters. Session ID: 1–256 bytes, no control characters. Responses include a fresh alert ID; stale clear/silence actions are ignored.</p>
     <button id="stop" type="button">Clear all &amp; stop sounds</button>
     <span id="stop-result" role="status"></span>

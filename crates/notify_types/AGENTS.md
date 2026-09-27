@@ -21,6 +21,9 @@ independent of HTTP, audio, Tauri, filesystem discovery, and process control.
 - Keep terminal alias normalization in `Origin::bundle_id`; avoid scattering
   inconsistent aliases through the Rust callers.
 
+`Agent` and `TaskState` are wire enums. `Agent` keeps a `#[serde(other)]`
+`Unknown` variant so a newer producer's value cannot break an older consumer.
+
 ## Context merge contract
 
 `SessionContext::apply` treats omitted/null fields as unchanged, supplied strings

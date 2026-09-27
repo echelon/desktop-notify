@@ -20,7 +20,10 @@ ROOT = Path(__file__).resolve().parents[1]
 CODEX_DIR = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 HOOKS_PATH = CODEX_DIR / "hooks.json"
 CONFIG_PATH = CODEX_DIR / "config.toml"
-COMMAND = shlex.join([sys.executable, str(ROOT / "scripts/codex_hook.py")])
+HOOK_SCRIPT = str(ROOT / "scripts/codex_hook.py")
+# Each install self-reports its agent; the hook's environment detection is a fallback.
+COMMAND = shlex.join([sys.executable, HOOK_SCRIPT, "--agent", "codex"])
+CLAUDE_COMMAND = shlex.join([sys.executable, HOOK_SCRIPT, "--agent", "claude_code"])
 OLD_COMMAND = "for i in 1 2 3; do afplay /Users/bt/dev/storyteller/artcraft/frontend/apps/artcraft/app/public/resources/sound/smrpg_flower.wav ; sleep 0.5; done &"
 MATCHER = r"(^|.*[._])(request_user_input(_async)?|AskUserQuestion)$"
 STATUS = "Notifying through Desktop Notify"
@@ -43,8 +46,13 @@ CLAUDE_SETTINGS = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claud
 LEGACY_CLAUDE_SCRIPTS = ("agent_notify.sh", "agent_notify_on_notification.sh")
 
 
-def hook_group(matcher, timeout, status):
-    handler = {"type": "command", "command": COMMAND, "timeout": timeout}
+def ours(command):
+    """Any earlier or current invocation of this repository's hook script."""
+    return command == OLD_COMMAND or HOOK_SCRIPT in (command or "")
+
+
+def hook_group(matcher, timeout, status, command=COMMAND):
+    handler = {"type": "command", "command": command, "timeout": timeout}
     if status:
         handler["statusMessage"] = status
     return {"hooks": [handler], **({"matcher": matcher} if matcher else {})}
@@ -56,7 +64,7 @@ def configuration():
     for name, matcher, timeout, status in EVENTS:
         groups = []
         for group in hooks.get(name, []):
-            handlers = [h for h in group.get("hooks", []) if h.get("command") not in (OLD_COMMAND, COMMAND)]
+            handlers = [h for h in group.get("hooks", []) if not ours(h.get("command"))]
             if handlers:
                 groups.append({**group, "hooks": handlers})
         groups.append(hook_group(matcher, timeout, status))
@@ -72,8 +80,8 @@ def claude_configuration():
         groups = []
         for group in hooks[name]:
             handlers = [h for h in group.get("hooks", [])
-                        # Any interpreter running this repo's hook counts as ours.
-                        if not h.get("command", "").endswith(str(ROOT / "scripts/codex_hook.py"))
+                        # Any interpreter or arguments running this repo's hook count as ours.
+                        if not ours(h.get("command"))
                         and not any(script in h.get("command", "") for script in LEGACY_CLAUDE_SCRIPTS)]
             if handlers:
                 groups.append({**group, "hooks": handlers})
@@ -82,7 +90,7 @@ def claude_configuration():
         else:
             del hooks[name]
     for name, matcher, timeout, status in CLAUDE_EVENTS:
-        hooks.setdefault(name, []).append(hook_group(matcher, timeout, status))
+        hooks.setdefault(name, []).append(hook_group(matcher, timeout, status, CLAUDE_COMMAND))
     return document
 
 

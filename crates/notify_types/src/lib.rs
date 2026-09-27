@@ -65,6 +65,17 @@ impl TaskState {
   }
 }
 
+/// The coding agent that reported a row, when the producer knows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Agent {
+  ClaudeCode,
+  Codex,
+  /// A value from a newer producer; kept so an older consumer still accepts the row.
+  #[serde(other)]
+  Unknown,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Notification {
   pub id: String,
@@ -74,6 +85,8 @@ pub struct Notification {
   /// `kind` and `silenced`, which are kept in sync for older clients.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub state: Option<TaskState>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub agent: Option<Agent>,
   #[serde(default)]
   pub silenced: bool,
   pub kind: String,
@@ -423,5 +436,24 @@ mod tests {
       assert!(!state.acknowledged().unwrap().is_alerting());
     }
     assert_eq!(TaskState::Working.acknowledged(), None);
+  }
+
+  #[test]
+  fn agent_is_optional_and_tolerates_newer_values() {
+    let row = |extra: &str| {
+      serde_json::from_str::<Notification>(&format!(
+        r#"{{"id":"a","kind":"done","title":"t","message":"m"{extra}}}"#
+      ))
+      .unwrap()
+      .agent
+    };
+    assert_eq!(row(""), None);
+    assert_eq!(row(r#","agent":"claude_code""#), Some(Agent::ClaudeCode));
+    assert_eq!(row(r#","agent":"codex""#), Some(Agent::Codex));
+    assert_eq!(row(r#","agent":"gemini_cli""#), Some(Agent::Unknown));
+    assert_eq!(
+      serde_json::to_string(&Agent::ClaudeCode).unwrap(),
+      r#""claude_code""#
+    );
   }
 }

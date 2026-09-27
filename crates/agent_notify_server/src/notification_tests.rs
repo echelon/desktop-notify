@@ -846,3 +846,35 @@ async fn a_parallel_tool_finishing_does_not_resume_a_row_waiting_on_another_call
     StatusCode::BAD_REQUEST
   );
 }
+
+#[actix_web::test]
+async fn the_reporting_agent_is_optional_and_kept_across_updates() {
+  let (state, _commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  let post = |body: &str| {
+    test::TestRequest::post()
+      .uri("/awaiting_user_input")
+      .insert_header(("Content-Type", "application/json"))
+      .set_payload(body.to_owned())
+      .to_request()
+  };
+  let first: Notification = test::call_and_read_body_json(
+    &app,
+    post(r#"{"session_id":"a","title":"T","message":"M","agent":"claude_code"}"#),
+  )
+  .await;
+  assert_eq!(first.agent, Some(notify_types::Agent::ClaudeCode));
+  // A per-tool resume sends no agent; the row keeps it.
+  let resumed: serde_json::Value = test::call_and_read_body_json(
+    &app,
+    working_request(r#"{"session_id":"a","only_if_waiting":true}"#).to_request(),
+  )
+  .await;
+  assert_eq!(resumed["notification"]["agent"], "claude_code");
+  let unassigned: Notification =
+    test::call_and_read_body_json(&app, post(r#"{"title":"T","message":"M"}"#)).await;
+  assert_eq!(unassigned.agent, None);
+  assert!(!serde_json::to_string(&unassigned)
+    .unwrap()
+    .contains("agent"));
+}

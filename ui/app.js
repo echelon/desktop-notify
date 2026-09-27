@@ -28,6 +28,39 @@ function taskState(alert) {
   return alert.silenced ? { input_needed: 'input_needed_ignored', failed: 'failed_acknowledged', done: 'done_acknowledged' }[base] : base;
 }
 
+// Small agent marks, drawn from fixed geometry (never from row data).
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const round = (n) => Math.round(n * 100) / 100;
+// Claude Code's mascot, from its terminal banner. Each block character is a
+// 2×2 grid of quadrants (upper-left, upper-right, lower-left, lower-right);
+// terminal cells are twice as tall as wide, so each quadrant is 1×2 units.
+const QUADRANTS = { '▐': '0101', '▛': '1110', '█': '1111', '▜': '1101', '▌': '1010', '▝': '0100', '▘': '1000' };
+const CLAUDE_MASCOT = [' ▐▛███▜▌', '▝▜█████▛▘', '  ▘▘ ▝▝'].flatMap((line, row) =>
+  [...line].flatMap((char, column) => [...(QUADRANTS[char] || '0000')].flatMap((filled, quadrant) =>
+    filled === '1' ? [`M${column * 2 + (quadrant % 2)} ${row * 4 + Math.floor(quadrant / 2) * 2}h1v2h-1z`] : []))).join('');
+const CODEX_SPIRAL = Array.from({ length: 45 }, (_, i) => {
+  const angle = i * 0.25;
+  const radius = 0.4 + angle * 0.58;
+  return `${i ? 'L' : 'M'}${round(8 + radius * Math.cos(angle))} ${round(8 + radius * Math.sin(angle))}`;
+}).join('');
+const AGENTS = {
+  claude_code: { label: 'Claude Code', path: CLAUDE_MASCOT, viewBox: '0 0 18 12' },
+  codex: { label: 'Codex', path: CODEX_SPIRAL, viewBox: '0 0 16 16' },
+};
+
+function agentMark(agent) {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', AGENTS[agent].viewBox);
+  // Wide marks start at the left and center on the text line.
+  svg.setAttribute('preserveAspectRatio', 'xMinYMid meet');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('class', `agent-mark ${agent}`);
+  const path = document.createElementNS(SVG_NS, 'path');
+  path.setAttribute('d', AGENTS[agent].path);
+  svg.append(path);
+  return svg;
+}
+
 function element(tag, className, text) {
   const node = document.createElement(tag);
   node.className = className;
@@ -44,7 +77,10 @@ function createRow(alert) {
   const kind = element('span', 'kind');
   const project = element('span', 'project');
   const session = element('span', 'session');
-  eyebrow.append(kind, project, session);
+  // The reporting agent's mark follows the state label on the same line.
+  const agent = element('span', 'agent-icon');
+  agent.setAttribute('role', 'img');
+  eyebrow.append(kind, agent, project, session);
   const title = element('h2', 'task-title');
   const preview = element('p', 'context-preview');
   info.append(eyebrow, title, preview);
@@ -78,7 +114,7 @@ function createRow(alert) {
   const status = element('p', 'focus-status');
   status.setAttribute('role', 'status');
   row.append(heading, details, status);
-  return { row, kind, project, session, title, preview, summary, context, fields, focus, acknowledge, clear, message, status };
+  return { row, agent, kind, project, session, title, preview, summary, context, fields, focus, acknowledge, clear, message, status };
 }
 
 const optionalText = (value) => typeof value === 'string' ? value.trim() : '';
@@ -139,6 +175,14 @@ function render(next) {
     refs.row.dataset.state = state;
     refs.row.classList.toggle('quiet', !STATES[state].alerting);
     refs.kind.textContent = STATES[state].label;
+    const known = AGENTS[alert.agent] ? alert.agent : null;
+    refs.agent.hidden = !known;
+    if (refs.agent.dataset.agent !== (known || '')) {
+      refs.agent.dataset.agent = known || '';
+      refs.agent.replaceChildren(...(known ? [agentMark(known)] : []));
+      refs.agent.title = known ? AGENTS[known].label : '';
+      refs.agent.setAttribute('aria-label', known ? `Reported by ${AGENTS[known].label}` : '');
+    }
     refs.session.textContent = alert.session_id ? `Session ${alert.session_id.slice(-8)}` : 'Unassigned';
     refs.session.title = alert.session_id || 'No session ID supplied';
     refs.title.textContent = alert.title;

@@ -27,6 +27,11 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 5px 16px; }
 @media (prefers-reduced-motion: reduce) { .notification[data-state="working"] .kind::before { animation: none; } }
 .row-heading { display: flex; align-items: flex-start; gap: 12px; }
 .row-info { flex: 1; min-width: 0; }
+.agent-icon { width: 13px; height: 13px; flex-shrink: 0; margin-left: -2px; }
+.agent-icon svg { display: block; width: 13px; height: 13px; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.agent-mark.claude_code { fill: #d97757; stroke: none; shape-rendering: crispEdges; }
+.agent-mark.codex { stroke: #d4dceb; stroke-width: 1.5; }
+.notification.quiet .agent-icon { opacity: .6; }
 .eyebrow { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 10px; }
 .kind { color: var(--accent); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; flex-shrink: 0; }
 .session { color: var(--muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }

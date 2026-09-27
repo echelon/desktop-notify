@@ -46,6 +46,10 @@ restarts; clearing a row does not block future updates from that session.
 - Every row has a `state`: `working` (busy, quiet), `input_needed`, `done`,
   `failed` (alerting), or the quiet `input_needed_ignored`, `done_acknowledged`,
   `failed_acknowledged`. `kind`/`silenced` remain for older clients.
+- Every notification endpoint and `/working` accept an optional `agent`
+  (`claude_code` or `codex`); unrecognized values read back as `unknown`. A row
+  keeps its agent when an update omits it, and the app shows a small Claude or
+  Codex mark beside the task.
 - `POST /working` marks a session busy (from a submitted prompt, or with
   `only_if_waiting` after the user answers). `POST /task_failed` reports a turn
   that ended on an error.

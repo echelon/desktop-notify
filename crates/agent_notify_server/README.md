@@ -49,7 +49,9 @@ The server listens on `127.0.0.1:43110` by default. Override with
 
 Each row carries `state` (`working`, `input_needed`, `input_needed_ignored`,
 `done`, `done_acknowledged`, `failed`, `failed_acknowledged`); `kind` and
-`silenced` remain for older clients. `/awaiting_user_input` accepts an optional
+`silenced` remain for older clients. Rows may carry `agent` (`claude_code`,
+`codex`, or `unknown` for unrecognized values); updates without it keep the
+previous value. `/awaiting_user_input` accepts an optional
 `tool_use_id`. Notification updates replace only the matching `session_id`. Omitted IDs use one
 legacy row. The shared sound loop prioritizes unsilenced questions, then the
 latest completion. Clearing or silencing a row leaves other sessions intact and

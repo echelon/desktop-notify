@@ -19,6 +19,7 @@ pub struct NotificationRequest {
   origin: Option<notify_types::Origin>,
   /// The tool call a question/permission request is waiting on, when known.
   tool_use_id: Option<String>,
+  agent: Option<notify_types::Agent>,
 }
 
 pub async fn awaiting_user_input(
@@ -117,7 +118,7 @@ fn fresh_id() -> String {
 }
 
 /// Replaces the session's row with `notification` at the front. Named sessions
-/// keep their context and origin unless the update supplies them. Any tool the
+/// keep their context, origin, and agent unless the update supplies them. Any tool the
 /// previous row waited on is forgotten; `waiting_on` records the new one.
 fn replace_row(
   current: &mut NotificationState,
@@ -149,6 +150,9 @@ fn replace_row(
     if notification.origin.is_none() {
       notification.origin = previous.origin;
     }
+    if notification.agent.is_none() {
+      notification.agent = previous.agent;
+    }
   }
   notification.context.apply(context.unwrap_or_default());
   current.active.insert(0, notification.clone());
@@ -179,6 +183,7 @@ fn notify(state: &ServerState, request: NotificationRequest, task: TaskState) ->
     id: fresh_id(),
     session_id: request.session_id,
     state: None,
+    agent: request.agent,
     silenced: false,
     kind: String::new(),
     title: title.into(),
@@ -215,6 +220,7 @@ pub struct WorkingRequest {
   /// The tool call that just finished. A row waiting on a different call stays
   /// waiting; without IDs on both sides, any finished tool resumes it.
   tool_use_id: Option<String>,
+  agent: Option<notify_types::Agent>,
 }
 
 #[derive(Serialize)]
@@ -286,6 +292,7 @@ pub async fn working(
     id: fresh_id(),
     session_id: Some(request.session_id),
     state: None,
+    agent: request.agent,
     silenced: false,
     kind: String::new(),
     title,

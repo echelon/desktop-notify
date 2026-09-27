@@ -34,7 +34,8 @@ class ClaudeInstallTests(unittest.TestCase):
         self.assertNotIn("Notification", hooks)
         for name, _, timeout, _ in install_hooks.CLAUDE_EVENTS:
             group = hooks[name][-1]
-            self.assertEqual(group["hooks"][0]["command"], install_hooks.COMMAND)
+            self.assertEqual(group["hooks"][0]["command"], install_hooks.CLAUDE_COMMAND)
+            self.assertTrue(group["hooks"][0]["command"].endswith("--agent claude_code"))
             self.assertEqual(group["hooks"][0]["timeout"], timeout)
         self.assertNotIn("statusMessage", hooks["PostToolUse"][-1]["hooks"][0])
         self.assertEqual(hooks["PreToolUse"][0]["matcher"], install_hooks.MATCHER)

@@ -12,6 +12,7 @@ class Element {
   setAttribute(name, value) { this[name] = value; }
   remove() { if (this.parent) { this.parent.children.splice(this.parent.children.indexOf(this), 1); this.parent = null; } }
   append(...nodes) { nodes.forEach((node) => this.insertBefore(node, null)); }
+  replaceChildren(...nodes) { [...this.children].forEach((child) => child.remove()); this.append(...nodes); }
   insertBefore(node, before) { node.remove(); this.children.splice(before ? this.children.indexOf(before) : this.children.length, 0, node); node.parent = this; }
   find(className) { if (this.className.split(' ').includes(className)) return this; return this.children.map((child) => child.find(className)).find(Boolean); }
 }
@@ -23,7 +24,7 @@ async function ui(alerts, invoke = async () => ({ target: 'application' }), soun
   const element = (id) => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
   const context = {
     Date, setInterval() {},
-    document: { createElement: (tag) => new Element(tag), getElementById: element, addEventListener() {} },
+    document: { createElement: (tag) => new Element(tag), createElementNS: (_ns, tag) => new Element(tag), getElementById: element, addEventListener() {} },
     window: { __TAURI__: {
       core: { async invoke(command, args) {
         calls.push([command, args]);
@@ -225,4 +226,32 @@ test('each task shows its state and can be dismissed without affecting the other
   // Offline disables dismissal like the other service actions.
   page.update([notification('a', { state: 'input_needed' })], false);
   assert.equal(page.row('a').find('acknowledge').disabled, true);
+});
+
+test('rows show a small mark for the reporting agent, and none when unknown', async () => {
+  const page = await ui([
+    notification('a', { agent: 'claude_code' }),
+    notification('b', { agent: 'codex' }),
+    notification('c'),
+    notification('d', { agent: 'unknown' }),
+  ]);
+  const icon = (id) => page.row(id).find('agent-icon');
+  assert.equal(icon('a').hidden, false);
+  // It sits in the top line, right after the state label.
+  const eyebrow = page.row('a').find('eyebrow').children;
+  assert.equal(eyebrow.indexOf(icon('a')), eyebrow.indexOf(page.row('a').find('kind')) + 1);
+  assert.equal(icon('a').title, 'Claude Code');
+  assert.equal(icon('a').children[0].class, 'agent-mark claude_code');
+  assert.equal(icon('b').title, 'Codex');
+  for (const id of ['c', 'd']) {
+    assert.equal(icon(id).hidden, true);
+    assert.equal(icon(id).children.length, 0);
+  }
+  // Unchanged agents keep their node; a change swaps the mark.
+  const mark = icon('a').children[0];
+  page.update([notification('a', { agent: 'claude_code' })]);
+  assert.equal(icon('a').children[0], mark);
+  page.update([notification('a', { agent: 'codex' })]);
+  assert.equal(icon('a').children[0].class, 'agent-mark codex');
+  assert.equal(icon('a').children.length, 1);
 });

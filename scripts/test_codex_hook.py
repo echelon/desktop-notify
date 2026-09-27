@@ -129,6 +129,24 @@ class HookTests(unittest.TestCase):
             hook.main()
         self.assertIn("error", json.loads(self.event_log.read_text().splitlines()[-1]))
 
+    def test_agent_is_detected_from_its_own_markers(self):
+        detect = hook.detect_agent
+        self.assertEqual(detect({}, {"CLAUDECODE": "1"}), "claude_code")
+        self.assertEqual(detect({}, {"AI_AGENT": "claude-code_2-1-283_agent"}), "claude_code")
+        self.assertEqual(detect({}, {"CODEX_THREAD_ID": "t"}), "codex")
+        self.assertEqual(detect({"transcript_path": "/Users/x/.codex/sessions/2026/a.jsonl"}, {}), "codex")
+        self.assertEqual(detect({"transcript_path": "/Users/x/.claude/projects/p/a.jsonl"}, {}), "claude_code")
+        self.assertEqual(detect({}, {"NOTIFY_AGENT": "codex", "CLAUDECODE": "1"}), "codex")
+        self.assertIsNone(detect({}, {"NOTIFY_AGENT": "$(evil)"}, argv=[]))
+        # The installer's self-report wins over environment markers.
+        self.assertEqual(detect({}, {"CLAUDECODE": "1"}, argv=["--agent", "codex"]), "codex")
+        self.assertEqual(detect({}, {"CLAUDECODE": "1"}, argv=["--agent", "bogus"]), "claude_code")
+        with patch.dict(hook.os.environ, {"CLAUDECODE": "1"}):
+            posts, _ = self.run_hook({"hook_event_name": "Stop", "session_id": "s", "last_assistant_message": "Done."})
+            tool, _ = self.run_hook({"hook_event_name": "PostToolUse", "session_id": "s"})
+        self.assertEqual(posts[0][1]["agent"], "claude_code")
+        self.assertNotIn("agent", tool[0][1])  # the row keeps its agent
+
     def test_event_log_rolls_over_to_its_newest_half(self):
         with patch.object(hook, "EVENT_LOG_LIMIT", 2000):
             for n in range(100):
