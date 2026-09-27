@@ -132,6 +132,12 @@ fn focus_tmux(origin: &Origin) -> Result<(), String> {
   if resolved != pane {
     return Err("The tmux pane is no longer available.".into());
   }
+  // Pane IDs restart from %0 with a new server on the same socket.
+  if let Some(expected) = origin.tmux_server_pid {
+    if run(&["display-message", "-p", "#{pid}"])? != expected.to_string() {
+      return Err("The tmux server has restarted; its panes are no longer this session's.".into());
+    }
+  }
   if let Some(client) = &origin.tmux_client {
     run(&["switch-client", "-c", client, "-t", pane])?;
   } else {

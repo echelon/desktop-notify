@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Run in a foreground Ghostty window to associate that window with its TTY."""
 import argparse
-import fcntl
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -39,19 +37,7 @@ def register(include_terminal=False):
     entry = {"terminal_app": "com.mitchellh.ghostty", "window_id": ids[0]}
     if include_terminal:
         entry["terminal_id"] = ids[1]
-    path = origins.REGISTRATIONS
-    path.parent.mkdir(exist_ok=True)
-    with path.with_suffix(".lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        entries = json.loads(path.read_text()) if path.exists() else {}
-        entries[key] = entry
-        temporary = path.with_suffix(f".{os.getpid()}.tmp")
-        try:
-            temporary.write_text(json.dumps(entries, indent=2) + "\n")
-            temporary.chmod(0o600)
-            temporary.replace(path)
-        finally:
-            temporary.unlink(missing_ok=True)
+    origins.save_registration(key, entry)
     # Isolate window focus during pairing; don't switch any tmux panes.
     return {"terminal_app": entry["terminal_app"], "app_pid": origin["app_pid"],
             "window_id": entry["window_id"], **({"terminal_id": ids[1]} if include_terminal else {})}

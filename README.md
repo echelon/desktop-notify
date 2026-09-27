@@ -123,6 +123,10 @@ use the new collection logic on their next question, approval, or completion.
 
 ## Global Codex CLI hooks
 
+For how hooks, origin capture, and Focus fit together, including exact Ghostty
+and tmux targeting and troubleshooting, see
+[Connecting an agent to the server](AGENTS.md#connecting-an-agent-to-the-server).
+
 ```sh
 python3 scripts/install_hooks.py            # Preview the exact hooks
 python3 scripts/install_hooks.py --install  # Install, back up, trust, verify
@@ -243,6 +247,10 @@ inside it is optional, including the window and pane fields:
 | `tmux_socket` | Absolute path to the tmux server socket |
 | `tmux_pane` | Stable pane ID such as `%101` |
 | `tmux_client` | Attached client's TTY; used when switching to a tmux pane |
+| `tab_id` | Ghostty tab containing `terminal_id` (informational) |
+| `tmux_server_pid` | tmux server process; Focus refuses a pane if the socket's server changed |
+| `tmux_session`, `tmux_session_name` | Session ID such as `$3`, and its name |
+| `tmux_window`, `tmux_window_index`, `tmux_window_name` | Window ID such as `@12`, its index, and its name |
 
 Ghostty, Terminal.app, and iTerm2 have specific window/session adapters. Other
 apps support application activation and exact window-title matching through
@@ -254,14 +262,23 @@ The Codex hook automatically captures process and terminal hints. Inside tmux,
 it uses the most recently active client attached to the originating session to
 find the GUI app, and records the pane/socket when available. Selecting a tmux
 pane is best effort and requires its socket; failure still permits app focus.
-Ghostty 1.3 does not expose its AppleScript terminal ID in the shell environment,
-so automatic capture can fall back to Ghostty itself. Callers that know precise
+Ghostty 1.3 exposes neither its AppleScript terminal ID nor a TTY through scripting,
+so the hook identifies the surface itself: it briefly sets the outer TTY's title
+(the attached tmux client's TTY, bypassing tmux) to a random marker, asks Ghostty
+which terminal carries it, and restores the previous title. The window, tab, and
+terminal IDs are cached per Ghostty process and TTY in `target/terminal-origins.json`;
+later alerts only confirm the cached terminal still exists. The lookup runs a
+fixed AppleScript with a 3-second limit and only when Ghostty hosts the session;
+depending on what launched the agent, macOS may ask once to allow it to control
+Ghostty. Set `NOTIFY_GHOSTTY_PROBE=0` to disable it. Inside tmux the hook also
+reports the server PID, session, and window. Callers that know precise
 IDs can pass them in the API or set `NOTIFY_TERMINAL_ID`, `NOTIFY_WINDOW_ID`,
 `NOTIFY_WINDOW_TITLE`, `NOTIFY_TERMINAL_APP`, or `NOTIFY_TTY` before launching Codex.
 Do not use Ghostty's newer core surface ID as an AppleScript terminal ID.
 
-To associate a specific Ghostty window with its shell (including when it is on
-another Space), run this from a foreground shell in that window:
+If the probe cannot run (for example, a fixed `title` in the Ghostty configuration),
+you can still associate a Ghostty window with its shell manually, including when it
+is on another Space, by running this from a foreground shell in that window:
 
 ```sh
 python3 /path/to/desktop-notify/scripts/register_terminal.py --test

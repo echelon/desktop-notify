@@ -62,24 +62,119 @@ README and `crates/agent_notify_server/static/index.html` describe the API.
 
 ## Connecting an agent to the server
 
-Agents talk to the server only through `scripts/codex_hook.py`, which posts rows to
-`POST /awaiting_user_input` and `POST /all_tasks_finished` with the event's
-`session_id`, collected `context`, and `origin`. Install it with the installer,
-not by hand, and start a new agent session afterwards:
+### Setup
+
+Agents talk to the server only through `scripts/codex_hook.py`. Install it with
+the installer, never by hand, then start a **new** agent session (running
+sessions keep the hook definitions they started with):
 
 ```sh
-python3 scripts/install_hooks.py --install           # Codex: ~/.codex/hooks.json + trust
+python3 scripts/install_hooks.py --install           # Codex: ~/.codex/hooks.json + trust hashes
 python3 scripts/install_hooks.py --claude --install  # Claude Code: ~/.claude/settings.json
 ```
 
-Omit `--install` to preview. Both register the same three hooks: Stop,
-PermissionRequest, and PreToolUse matching `request_user_input(_async)` or
-`AskUserQuestion`, each synchronous with a 720 s timeout for cold build/start.
+Omit `--install` to preview. Both write backups and preserve unrelated hooks and
+settings, and both register the same three hooks with the same command
+(`<python> <repo>/scripts/codex_hook.py`), synchronous with a 720 s timeout so a
+cold build/start can finish:
+
+| Agent event | Endpoint | Row kind |
+| --- | --- | --- |
+| Stop (turn finished) | `/all_tasks_finished`, or `/awaiting_user_input` if the final message asks a question | Finished / Input needed |
+| PermissionRequest | `/awaiting_user_input` | Input needed |
+| PreToolUse matching `(^\|.*[._])(request_user_input(_async)?\|AskUserQuestion)$` | `/awaiting_user_input` | Input needed |
+
 Never wire an agent to the legacy sound-only endpoints (`/loop_*`, `/alert_*`) or
-call `/stop` from a hook: they create no row and `/stop`/`/loop_*` clear **every**
-session's row. The Claude installer removes old `~/.claude/agent_notify*.sh` hooks
-that did this. To check an install, pipe a Stop event into the installed command
-and confirm a row appears in `GET /notifications`.
+call `/stop` from a hook. They create no row, and `/stop` or `/loop_*` clear
+**every** session's row. The Claude installer removes old
+`~/.claude/agent_notify*.sh` hooks that did this. Editing `scripts/*.py` needs no
+reinstall because hooks load the script on each run. Changing the Rust wire types
+(`notify-types`) does need `python3 scripts/build.py` and a service restart: the
+server rejects unknown origin fields, so an old server returns 400 for new hooks.
+A restart discards in-memory rows, so re-post any pending ones.
+
+### What a hook sends
+
+`codex_hook.py` reads the hook JSON on stdin (Codex and Claude Code use the same
+field names) and posts `{title, message, session_id, context, origin}`:
+
+- `session_id` comes from the event and identifies the row, one per agent session.
+- `message`: the event's `last_assistant_message` for Stop. Claude Code may omit
+  it, in which case the hook uses the newest assistant text in `transcript_path`.
+- `context` (`notification_context.py`) holds the cwd, repo name/description
+  from manifests or README, and `current_ask`, taken from the latest real user
+  prompt in either transcript format.
+- `origin` (`notification_origin.py`) holds focus hints, described below. Context
+  and origin are best-effort; their failure never suppresses the alert.
+
+### How Focus finds the exact terminal
+
+Capture happens in the hook, at alert time:
+
+1. **Process and app:** walk the hook's process ancestry to the `codex`/`claude`
+   process (`pid`). Inside tmux, the server is daemonized and its ancestry does
+   not reach the GUI. Instead, ask the tmux server named by `$TMUX`, using its
+   socket, for the most recently active client attached to this pane's session.
+   That client's TTY is the outer terminal (`tty`, `tmux_client`), and its
+   ancestry leads to the GUI app (`terminal_app` bundle ID, `app_pid`).
+2. **tmux location:** from `$TMUX`/`$TMUX_PANE`, record `tmux_socket`, `tmux_pane`
+   (`%N`), `tmux_server_pid`, `tmux_session` (`$N`), `tmux_window` (`@N`),
+   `tmux_window_index`, and the session/window names.
+3. **Ghostty surface:** Ghostty's AppleScript API has window/tab/terminal IDs
+   but no TTY or PID, so the hook names the surface itself (`probe_ghostty`).
+   It snapshots all terminal titles, writes a random OSC 2 title directly to the
+   outer TTY (bypassing tmux), and asks the fixed read-only
+   `scripts/ghostty_surface.applescript` which terminal carries the marker. It
+   then restores the old title as printable text and records `window_id`,
+   `tab_id`, and `terminal_id`. The result is cached in ignored
+   `target/terminal-origins.json` under `<app_pid>:<tty>`. Later alerts only
+   confirm the cached terminal still exists, since a live surface keeps its PTY.
+   A missing terminal triggers a fresh probe. Manual `register_terminal.py`
+   pairings are the fallback, and `NOTIFY_GHOSTTY_PROBE=0` disables the probe.
+   Other terminals use their own hints: iTerm2's `ITERM_SESSION_ID`, and TTYs
+   for Terminal.app/iTerm2.
+
+Focus happens in the desktop app (`crates/desktop_notify_app/src/focus.rs`),
+when the row's Focus button is clicked:
+
+1. **tmux first.** Resolve `tmux_pane` on `tmux_socket`, and refuse it if the pane
+   is gone or `#{pid}` differs from `tmux_server_pid` (pane IDs restart with a
+   new server). Then `switch-client -c <tmux_client> -t <pane>` and
+   `select-pane`, which change session, window, and pane even if you have moved
+   elsewhere.
+2. **Then the window,** trying `terminal_id`, then `tty`, then `window_id`, then
+   `window_title`, then the app itself, through the fixed `src/focus/*.applescript`
+   adapters. Arguments go through argv, never interpolated. For Ghostty,
+   `focus <terminal>` raises that surface's window and tab, and macOS switches
+   to its Space or full-screen space. It works across Ghostty windows and tmux
+   clients.
+3. A tmux failure still focuses the window, with a warning on the row. Focus
+   never hides, silences, or dismisses the row.
+
+Rows captured before a capture improvement keep their old, weaker origin. They
+become exact at the session's next hook event.
+
+### Checking and troubleshooting
+
+- **Check a hook:** pipe a Stop event into the installed command, then inspect
+  the row's `origin`:
+  `echo '{"hook_event_name":"Stop","session_id":"test","cwd":"'$PWD'","last_assistant_message":"hi"}' | <python> scripts/codex_hook.py`,
+  then `curl -s 127.0.0.1:43110/notifications`. Dismiss the test row afterwards
+  with `POST /dismiss/<id>`.
+- **Check capture alone:** run
+  `cd scripts && python3 -c 'import notification_origin as o; print(o.capture_origin())'`
+  from the terminal you want identified. Expect `terminal_id` for Ghostty and
+  `tmux_*` fields inside tmux.
+- **No row appears:** make sure the hook is installed for this agent and the
+  session was started after installing. Check `target/desktop-notify.log` and
+  that `/health` answers.
+- **Focus reaches Ghostty but not the window:** the row predates the fix, the
+  probe was disabled, a fixed Ghostty `title` config ignores OSC 2, or macOS
+  denied the process permission to control Ghostty. Allow it in System Settings →
+  Privacy & Security → Automation, or run `scripts/register_terminal.py` in that
+  window.
+- **Unit tests** must patch `notification_origin.ghostty` and TTY writes. Never
+  script the real Ghostty or write titles to real TTYs from tests.
 
 ## Build and verification
 

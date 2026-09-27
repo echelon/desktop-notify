@@ -26,7 +26,8 @@ Resolve repository paths from `__file__`, since hooks run from other directories
 
 - Keep context/origin collection independent: failure of either must not suppress
   the alert. Discovery must not execute repository code or call models/network
-  services. Origin collection must not open apps or prompt for Automation access.
+  services. Origin collection must not open apps; the Ghostty probe is the only
+  scripting it performs, and a stalled Automation prompt must be killed by its timeout.
 - Read repo metadata from manifests and README fallbacks; handle worktree `.git`
   files. Bound reads (currently 64 KiB metadata files, last 8 MiB of transcripts).
 - Transcripts are an unstable input format. Tolerate missing files, malformed
@@ -34,7 +35,16 @@ Resolve repository paths from `__file__`, since hooks run from other directories
   instead of inventing summaries. Keep explicit context and `NOTIFY_*` overrides.
 - For tmux, find the GUI through the attached client for the originating session,
   not merely the tmux server's ancestry; keep socket, stable pane, and client TTY.
-- Terminal registration is explicit, foreground Ghostty pairing keyed by app PID
+- Ghostty surfaces are identified by `probe_ghostty`: write a random OSC 2 title
+  to the outer TTY (tmux client TTY), find it via the fixed read-only
+  `ghostty_surface.applescript` (arguments via argv), then restore the previous
+  title as printable text. Only probe when Ghostty hosts the session, bound each
+  lookup (3 s), cache per app PID and TTY, and revalidate the cached terminal
+  before reuse. Honor `NOTIFY_GHOSTTY_PROBE=0`. Tests must patch `ghostty` and
+  TTY writes; never script the real Ghostty or write to a real TTY in tests.
+- Inside tmux, report the server PID, session/window IDs, index, and names; read
+  free-text names separately rather than splitting them from one format string.
+- Manual terminal registration is explicit, foreground Ghostty pairing keyed by app PID
   and outer TTY. Store it under ignored `target/terminal-origins.json`, using a lock
   and atomic replacement. Do not assign one registration to every Ghostty window
   or mistake a core surface ID for a scripting terminal ID.

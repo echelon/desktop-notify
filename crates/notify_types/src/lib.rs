@@ -125,6 +125,25 @@ pub struct Origin {
   pub tmux_pane: Option<String>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub tmux_client: Option<String>,
+  /// Ghostty tab containing `terminal_id` (informational; focus uses the terminal).
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub tab_id: Option<String>,
+  /// tmux server process. Pane IDs restart with the server, so focus refuses a
+  /// pane whose socket is now served by a different process.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub tmux_server_pid: Option<u32>,
+  /// Stable tmux session ID such as `$3`.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub tmux_session: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub tmux_session_name: Option<String>,
+  /// Stable tmux window ID such as `@12`.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub tmux_window: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub tmux_window_index: Option<u32>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub tmux_window_name: Option<String>,
 }
 
 impl Origin {
@@ -138,6 +157,11 @@ impl Origin {
       &self.tmux_socket,
       &self.tmux_pane,
       &self.tmux_client,
+      &self.tab_id,
+      &self.tmux_session,
+      &self.tmux_session_name,
+      &self.tmux_window,
+      &self.tmux_window_name,
     ]
     .into_iter()
     .flatten()
@@ -148,7 +172,7 @@ impl Origin {
         );
       }
     }
-    if [self.pid, self.app_pid]
+    if [self.pid, self.app_pid, self.tmux_server_pid]
       .into_iter()
       .flatten()
       .any(|pid| pid <= 1 || pid > i32::MAX as u32)
@@ -168,6 +192,26 @@ impl Origin {
         .is_some_and(|id| !id.is_empty() && id.bytes().all(|c| c.is_ascii_digit()))
     }) {
       return Err("tmux_pane must be a pane ID such as %101");
+    }
+    for (value, prefix, error) in [
+      (
+        &self.tmux_session,
+        '$',
+        "tmux_session must be a session ID such as $3",
+      ),
+      (
+        &self.tmux_window,
+        '@',
+        "tmux_window must be a window ID such as @12",
+      ),
+    ] {
+      if value.as_ref().is_some_and(|id| {
+        !id
+          .strip_prefix(prefix)
+          .is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
+      }) {
+        return Err(error);
+      }
     }
     if self
       .tmux_socket
@@ -209,6 +253,7 @@ mod tests {
       r#"{"pid":123}"#,
       r#"{"window_id":"42"}"#,
       r#"{"tmux_pane":"%1"}"#,
+      r#"{"tab_id":"tab-1","tmux_server_pid":6330,"tmux_session":"$32","tmux_session_name":"work","tmux_window":"@7","tmux_window_index":0,"tmux_window_name":"claude"}"#,
     ] {
       serde_json::from_str::<Origin>(json)
         .unwrap()
@@ -224,6 +269,10 @@ mod tests {
       r#"{"pid":4294967295}"#,
       r#"{"tmux_pane":"%1; kill-server"}"#,
       r#"{"tmux_socket":"relative"}"#,
+      r#"{"tmux_session":"work"}"#,
+      r#"{"tmux_window":"@1; kill-server"}"#,
+      r#"{"tmux_server_pid":1}"#,
+      r#"{"tmux_window_name":"a\u0007b"}"#,
       r#"{"tty":"/tmp/tty"}"#,
       r#"{"window_title":"x\ny"}"#,
     ] {

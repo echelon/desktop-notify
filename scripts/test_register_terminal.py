@@ -16,6 +16,8 @@ class RegistrationTests(unittest.TestCase):
         self.path = Path(directory.name) / "terminal-origins.json"
         self.addCleanup(patch.stopall)
         patch.object(origins, "REGISTRATIONS", self.path).start()
+        # Never script the real Ghostty or write a title to a real TTY.
+        patch.object(origins, "ghostty", return_value=None).start()
         self.origin = {"terminal_app": "com.mitchellh.ghostty", "app_pid": 123,
                        "tty": "/dev/ttys001", "tmux_socket": "/tmp/tmux", "tmux_pane": "%3"}
 

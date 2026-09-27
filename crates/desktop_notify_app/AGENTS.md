@@ -46,8 +46,9 @@ frontend lives in `../../ui/` and has its own rules.
 - Ghostty's core surface ID is not its AppleScript terminal ID. Exact Ghostty
   window pairing comes from `scripts/register_terminal.py`; preserve that path.
 - tmux selection requires the supplied absolute socket and a resolved stable pane
-  ID. Never use an arbitrary inherited server. A tmux failure still allows app
-  focus with a warning.
+  ID. When `tmux_server_pid` is supplied, refuse a socket now served by another
+  process: pane IDs restart with the server. Never use an arbitrary inherited
+  server. A tmux failure still allows app focus with a warning.
 - Pass origin strings as separate arguments to fixed scripts/commands; never
   interpolate them into shell or AppleScript source. Bound external helpers and
   kill/reap timed-out children, including stalled Automation permission prompts.
