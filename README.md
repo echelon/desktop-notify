@@ -43,8 +43,16 @@ Rows are ordered by most recent update. Focus hints are retained for a session
 when an update omits `origin`. Statuses live in memory until cleared or the server
 restarts; clearing a row does not block future updates from that session.
 
-- `GET /notifications` returns all rows, including silenced rows.
-- `POST /silence/{id}` stops that entry's sound and keeps its status and Focus button.
+- Every row has a `state`: `working` (busy, quiet), `input_needed`, `done`,
+  `failed` (alerting), or the quiet `input_needed_ignored`, `done_acknowledged`,
+  `failed_acknowledged`. `kind`/`silenced` remain for older clients.
+- `POST /working` marks a session busy (from a submitted prompt, or with
+  `only_if_waiting` after the user answers). `POST /task_failed` reports a turn
+  that ended on an error.
+- `POST /acknowledge/{id}` dismisses one alerting row. It stays listed in its quiet
+  state while other rows keep alerting.
+- `GET /notifications` returns all rows, including quiet ones.
+- `POST /silence/{id}` is the legacy name for `/acknowledge/{id}`.
 - `POST /dismiss/{id}` clears only that entry. Both actions return `{stopped: bool}`;
   stale IDs are harmless, even if the same session has posted a newer update.
 - `GET /notification` still returns the most recent row for older clients.
@@ -188,9 +196,12 @@ shell, dark frameless UI, and tray behavior follow the sibling Todo app. The
 frontend is plain HTML/CSS/JavaScript bundled by Tauri; no Node build step is needed.
 
 - New alerts open the window above other apps, on every Space, including full-screen apps.
-- Each row shows **Input needed** or **Finished**, a short session ID, and its own
-  **Focus** and **×** buttons, plus **Muted** once its sound is stopped. Available
-  project/task context is compact; expand **Details** (or **View message**) for the full text.
+- Each row shows its task state (**Working**, **Input needed**, **Finished**,
+  **Failed**, or a dimmed "ignored"/"seen" variant), a short session ID, and its
+  own **Focus**, **Dismiss** (alerting rows only), and **×** buttons. **Dismiss**
+  acknowledges just that task; other tasks keep alerting. **×** removes the row.
+  Available project/task context is compact; expand **Details** (or **View
+  message**) for the full text. Only alerting rows open the window or mark the tray.
 - Sound is global. The bar above the status line has **Stop sound** (`POST
   /sound/silence`, retaining every row), **Snooze 1 min**, and **Snooze 5 min**
   (`POST /sound/snooze`), with a countdown while snoozed.

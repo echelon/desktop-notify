@@ -28,12 +28,15 @@ class ClaudeInstallTests(unittest.TestCase):
         document = json.loads(self.settings.read_text())
         hooks = document["hooks"]
         self.assertEqual(document["theme"], "dark")
-        self.assertEqual(hooks["PostToolUse"], [unrelated])
-        self.assertNotIn("UserPromptSubmit", hooks)
+        # The legacy /stop hook is gone; unrelated hooks stay alongside ours.
+        self.assertEqual(hooks["PostToolUse"][0], unrelated)
+        self.assertEqual(len(hooks["PostToolUse"]), 2)
         self.assertNotIn("Notification", hooks)
-        for name in ("Stop", "PermissionRequest", "PreToolUse"):
-            [group] = hooks[name]
+        for name, _, timeout, _ in install_hooks.CLAUDE_EVENTS:
+            group = hooks[name][-1]
             self.assertEqual(group["hooks"][0]["command"], install_hooks.COMMAND)
+            self.assertEqual(group["hooks"][0]["timeout"], timeout)
+        self.assertNotIn("statusMessage", hooks["PostToolUse"][-1]["hooks"][0])
         self.assertEqual(hooks["PreToolUse"][0]["matcher"], install_hooks.MATCHER)
         self.assertEqual(len(list(self.settings.parent.glob("settings.json.desktop-notify-backup-*"))), 1)
         # Reinstalling replaces rather than duplicates this hook.
@@ -42,7 +45,8 @@ class ClaudeInstallTests(unittest.TestCase):
 
     def test_creates_settings_when_absent(self):
         install_hooks.install_claude()
-        self.assertEqual(set(json.loads(self.settings.read_text())["hooks"]), {"Stop", "PermissionRequest", "PreToolUse"})
+        self.assertEqual(set(json.loads(self.settings.read_text())["hooks"]),
+                         {name for name, *_ in install_hooks.CLAUDE_EVENTS})
 
 
 if __name__ == "__main__":

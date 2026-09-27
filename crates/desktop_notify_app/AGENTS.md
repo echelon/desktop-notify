@@ -19,7 +19,8 @@ frontend lives in `../../ui/` and has its own rules.
 
 ## Window and connection behavior
 
-- New/replaced notification IDs show the window. Unchanged, reordered, or silenced
+- New/replaced notification IDs in an alerting state show the window; a row
+  becoming `working` or quiet does not. Unchanged, reordered, or silenced
   rows preserve visibility; removing one row must not hide other rows. Removing
   the final row hides the window. A user-hidden alert stays hidden until a new
   ID arrives or the tray is recalled.

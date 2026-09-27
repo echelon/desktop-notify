@@ -45,7 +45,10 @@
       <tr><td><code>POST /awaiting_user_input</code></td><td>Show the question and loop the awaiting sound.</td></tr>
       <tr><td><code>POST /all_tasks_finished</code></td><td>Show the outcome and loop the done sound.</td></tr>
       <tr><td><code>GET /notifications</code></td><td>List all session rows, including silenced ones.</td></tr>
-      <tr><td><code>POST /silence/{id}</code></td><td>Silence this entry while retaining its status.</td></tr>
+      <tr><td><code>POST /working</code></td><td>Mark a session busy; <code>only_if_waiting</code> only resumes a waiting row.</td></tr>
+      <tr><td><code>POST /task_failed</code></td><td>Report a turn that ended on an error (alerts).</td></tr>
+      <tr><td><code>POST /acknowledge/{id}</code></td><td>Dismiss one alerting row; it stays listed and others keep alerting.</td></tr>
+      <tr><td><code>POST /silence/{id}</code></td><td>Legacy name for <code>/acknowledge/{id}</code>.</td></tr>
       <tr><td><code>GET /sound</code></td><td><code>{snoozed_until, alerting}</code>; the deadline is RFC 3339 UTC or null.</td></tr>
       <tr><td><code>POST /sound/silence</code></td><td>Silence every current entry and cancel any snooze.</td></tr>
       <tr><td><code>POST /sound/snooze</code></td><td>JSON <code>{"seconds": 60}</code> (1–86,400); mute all sound until then.</td></tr>

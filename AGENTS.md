@@ -44,10 +44,15 @@ README and `crates/agent_notify_server/static/index.html` describe the API.
 - Independent Codex sessions must remain independent, even in the same directory.
   A session ID identifies a row; a fresh notification ID identifies each update.
   Stale row actions must never affect a replacement or another session.
-- Focus, Stop sound, Clear, and Hide have separate meanings. Focus leaves the row
-  and sound intact; Stop sound is global and silences every row but retains them;
-  Clear removes that row; Hide only changes window visibility. `/stop`
-  intentionally clears everything.
+- Each row has a `TaskState` (`notify-types`): `working` (busy),
+  `input_needed`/`done`/`failed` (alerting), and their quiet counterparts
+  `input_needed_ignored`/`done_acknowledged`/`failed_acknowledged`. Only
+  alerting rows feed the sound loop, open the window, or mark the tray. `kind`
+  and `silenced` are legacy mirrors kept in sync by `Notification::set_state`.
+- Focus, Dismiss, Stop sound, Clear, and Hide have separate meanings. Focus leaves
+  the row and sound intact. Dismiss acknowledges one row, leaving others alerting.
+  Stop sound acknowledges every alerting row. Clear removes that row. Hide only
+  changes window visibility. `/stop` intentionally clears everything.
 - Snooze mutes all sound until a recorded wall-clock deadline (chrono
   `DateTime<Utc>`), checked against the current time on requests; never a timer.
 - Pending questions have sound priority over completions. Preserve one shared
@@ -75,14 +80,28 @@ python3 scripts/install_hooks.py --claude --install  # Claude Code: ~/.claude/se
 
 Omit `--install` to preview. Both write backups and preserve unrelated hooks and
 settings, and both register the same three hooks with the same command
-(`<python> <repo>/scripts/codex_hook.py`), synchronous with a 720 s timeout so a
-cold build/start can finish:
+(`<python> <repo>/scripts/codex_hook.py`), all synchronous. Alert events use a
+720 s timeout so a cold build/start can finish. `UserPromptSubmit` (30 s) and
+`PostToolUse` (10 s) never start the service and are skipped on services older
+than API 4. PostToolUse sends only `{session_id, only_if_waiting, tool_use_id}`,
+without discovery, to stay fast. It must stay synchronous: an asynchronous
+completion could land after a newer question and cancel it. The server resumes a
+waiting row only when the finished `tool_use_id` matches the one it waits on (or
+either is unknown), so a parallel tool cannot cancel another tool's prompt.
 
 | Agent event | Endpoint | Row kind |
 | --- | --- | --- |
-| Stop (turn finished) | `/all_tasks_finished`, or `/awaiting_user_input` if the final message asks a question | Finished / Input needed |
-| PermissionRequest | `/awaiting_user_input` | Input needed |
-| PreToolUse matching `(^\|.*[._])(request_user_input(_async)?\|AskUserQuestion)$` | `/awaiting_user_input` | Input needed |
+| UserPromptSubmit | `/working` with the prompt as title/message | `working` |
+| PermissionRequest | `/awaiting_user_input` (+ `tool_use_id`) | `input_needed` |
+| PreToolUse matching `(^\|.*[._])(request_user_input(_async)?\|AskUserQuestion)$` | `/awaiting_user_input` (+ `tool_use_id`) | `input_needed` |
+| PostToolUse (every tool) | `/working` with `only_if_waiting` (+ `tool_use_id`) | `input_needed*` → `working`, else no change |
+| Stop (turn finished) | `/all_tasks_finished`, or `/awaiting_user_input` only if the message's closing paragraph asks a question or requests input | `done` / `input_needed` |
+| StopFailure (Claude Code only) | `/task_failed` | `failed` |
+
+A finished turn is `done` even when work continues in the background. Report the
+background result as a new status when it completes, and never leave a row
+`input_needed` unless the user must act. Put any real question in the closing
+paragraph, because the Stop classification reads only that paragraph.
 
 Never wire an agent to the legacy sound-only endpoints (`/loop_*`, `/alert_*`) or
 call `/stop` from a hook. They create no row, and `/stop` or `/loop_*` clear
@@ -165,6 +184,12 @@ become exact at the session's next hook event.
   `cd scripts && python3 -c 'import notification_origin as o; print(o.capture_origin())'`
   from the terminal you want identified. Expect `terminal_id` for Ghostty and
   `tmux_*` fields inside tmux.
+- **Why did a row get this state?** `target/hook-events.jsonl` has one JSON line
+  per hook run: event, session, tool, chosen endpoint (`action`), for Stop the
+  `closing` paragraph that was classified, the resulting `state`, any `error`,
+  and `ms`. It trims itself to its newest half past 512 KB. The service log
+  `target/desktop-notify.log` records each `session …: Old -> New` transition and
+  rotates to `.1` past 5 MB when a hook starts the service.
 - **No row appears:** make sure the hook is installed for this agent and the
   session was started after installing. Check `target/desktop-notify.log` and
   that `/health` answers.

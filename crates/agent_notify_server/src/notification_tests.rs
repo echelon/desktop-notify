@@ -6,7 +6,7 @@ use crate::{
 };
 use actix_web::{http::StatusCode, test, web, App};
 use chrono::{TimeDelta, Utc};
-use notify_types::{Notification, SoundState};
+use notify_types::{Notification, SoundState, TaskState};
 use std::sync::{Arc, Mutex};
 
 fn state() -> (
@@ -31,7 +31,10 @@ fn routes(cfg: &mut web::ServiceConfig) {
     .route("/dismiss/{id}", web::post().to(dismiss))
     .route("/notification", web::get().to(current_notification))
     .route("/notifications", web::get().to(list_notifications))
-    .route("/silence/{id}", web::post().to(silence))
+    .route("/working", web::post().to(working))
+    .route("/task_failed", web::post().to(task_failed))
+    .route("/acknowledge/{id}", web::post().to(acknowledge))
+    .route("/silence/{id}", web::post().to(acknowledge))
     .route("/sound", web::get().to(sound))
     .route("/sound/silence", web::post().to(silence_all))
     .route("/sound/snooze", web::post().to(snooze))
@@ -658,4 +661,188 @@ async fn resume_stop_and_clock_jumps_end_a_snooze() {
   test::call_service(&app, snooze_request(60).to_request()).await;
   test::call_service(&app, test::TestRequest::post().uri("/stop").to_request()).await;
   assert_eq!(state.notifications.lock().unwrap().snoozed_until, None);
+}
+
+fn working_request(body: &str) -> test::TestRequest {
+  test::TestRequest::post()
+    .uri("/working")
+    .insert_header(("Content-Type", "application/json"))
+    .set_payload(body.to_owned())
+}
+
+fn row_state(state: &web::Data<ServerState>, session: &str) -> Option<TaskState> {
+  let current = state.notifications.lock().unwrap();
+  current
+    .active
+    .iter()
+    .find(|n| n.session_id.as_deref() == Some(session))
+    .map(|n| n.task_state())
+}
+
+#[actix_web::test]
+async fn dismissing_one_task_leaves_the_others_alerting() {
+  let (state, commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  let done: Notification =
+    test::call_and_read_body_json(&app, alert_request("all_tasks_finished", "a").to_request())
+      .await;
+  let question: Notification =
+    test::call_and_read_body_json(&app, alert_request("awaiting_user_input", "b").to_request())
+      .await;
+  let failure: Notification =
+    test::call_and_read_body_json(&app, alert_request("task_failed", "c").to_request()).await;
+  assert_eq!(done.state, Some(TaskState::Done));
+  assert_eq!(
+    (failure.state, failure.kind.as_str()),
+    (Some(TaskState::Failed), "task_failed")
+  );
+  while commands.try_recv().is_ok() {}
+
+  // Acknowledging the audible question falls back to the failure's await loop.
+  let ack = test::TestRequest::post()
+    .uri(&format!("/acknowledge/{}", question.id))
+    .to_request();
+  let response: serde_json::Value = test::call_and_read_body_json(&app, ack).await;
+  assert_eq!(response["stopped"], true);
+  assert_eq!(row_state(&state, "b"), Some(TaskState::InputNeededIgnored));
+  assert!(matches!(
+    commands.try_recv().unwrap(),
+    AudioCommand::PlayLoop(spec) if spec.name == "await"
+  ));
+  let ack = test::TestRequest::post()
+    .uri(&format!("/acknowledge/{}", failure.id))
+    .to_request();
+  test::call_service(&app, ack).await;
+  assert_eq!(row_state(&state, "c"), Some(TaskState::FailedAcknowledged));
+  assert!(matches!(
+    commands.try_recv().unwrap(),
+    AudioCommand::PlayLoop(spec) if spec.name == "done"
+  ));
+  assert_eq!(row_state(&state, "a"), Some(TaskState::Done));
+
+  // Already-quiet and stale IDs are harmless; rows stay listed.
+  for id in [&question.id, &"0".repeat(32)] {
+    let ack = test::TestRequest::post()
+      .uri(&format!("/acknowledge/{id}"))
+      .to_request();
+    let response: serde_json::Value = test::call_and_read_body_json(&app, ack).await;
+    assert_eq!(response["stopped"], false);
+  }
+  assert!(commands.try_recv().is_err());
+  assert_eq!(state.notifications.lock().unwrap().active.len(), 3);
+
+  // The legacy /silence alias and global Stop sound acknowledge too.
+  let silence = test::TestRequest::post()
+    .uri(&format!("/silence/{}", done.id))
+    .to_request();
+  test::call_service(&app, silence).await;
+  assert_eq!(row_state(&state, "a"), Some(TaskState::DoneAcknowledged));
+  assert!(matches!(
+    commands.try_recv().unwrap(),
+    AudioCommand::StopAll
+  ));
+}
+
+#[actix_web::test]
+async fn working_stops_a_sessions_alert_and_only_resumes_waiting_rows_when_asked() {
+  let (state, commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+
+  // A tool finishing in a session with no waiting row changes nothing.
+  let noop: serde_json::Value = test::call_and_read_body_json(
+    &app,
+    working_request(r#"{"session_id":"a","only_if_waiting":true}"#).to_request(),
+  )
+  .await;
+  assert_eq!(noop, serde_json::json!({"updated": false}));
+  assert!(state.notifications.lock().unwrap().active.is_empty());
+
+  // A submitted prompt creates a quiet working row.
+  let started: serde_json::Value = test::call_and_read_body_json(
+    &app,
+    working_request(r#"{"session_id":"a","title":"repo: Fix login","message":"Fix login"}"#)
+      .to_request(),
+  )
+  .await;
+  assert_eq!(started["notification"]["state"], "working");
+  assert_eq!(row_state(&state, "a"), Some(TaskState::Working));
+  assert!(commands.try_recv().is_err());
+
+  let question: Notification =
+    test::call_and_read_body_json(&app, alert_request("awaiting_user_input", "a").to_request())
+      .await;
+  commands.try_recv().unwrap();
+  test::call_service(&app, alert_request("all_tasks_finished", "b").to_request()).await;
+  // The question keeps priority, so the completion does not restart the loop.
+  assert!(commands.try_recv().is_err());
+
+  // Answering the question resumes work: fresh ID, text kept, sound moves on.
+  let resumed: serde_json::Value = test::call_and_read_body_json(
+    &app,
+    working_request(r#"{"session_id":"a","only_if_waiting":true}"#).to_request(),
+  )
+  .await;
+  assert_eq!(resumed["updated"], true);
+  assert_ne!(resumed["notification"]["id"], question.id.as_str());
+  assert_eq!(resumed["notification"]["title"], "Task");
+  assert!(matches!(
+    commands.try_recv().unwrap(),
+    AudioCommand::PlayLoop(spec) if spec.name == "done"
+  ));
+
+  // A finished row is not revived by a per-tool hook, only by a new prompt.
+  let noop: serde_json::Value = test::call_and_read_body_json(
+    &app,
+    working_request(r#"{"session_id":"b","only_if_waiting":true}"#).to_request(),
+  )
+  .await;
+  assert_eq!(noop["updated"], false);
+  assert_eq!(row_state(&state, "b"), Some(TaskState::Done));
+  test::call_service(&app, working_request(r#"{"session_id":"b"}"#).to_request()).await;
+  assert_eq!(row_state(&state, "b"), Some(TaskState::Working));
+  assert!(matches!(
+    commands.try_recv().unwrap(),
+    AudioCommand::StopAll
+  ));
+
+  for bad in [
+    r#"{"only_if_waiting":true}"#,
+    r#"{"session_id":" "}"#,
+    r#"{"session_id":"a","extra":1}"#,
+  ] {
+    let response = test::call_service(&app, working_request(bad).to_request()).await;
+    assert!(response.status().is_client_error(), "{bad}");
+  }
+}
+
+#[actix_web::test]
+async fn a_parallel_tool_finishing_does_not_resume_a_row_waiting_on_another_call() {
+  let (state, _commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  let ask = test::TestRequest::post()
+    .uri("/awaiting_user_input")
+    .insert_header(("Content-Type", "application/json"))
+    .set_payload(
+      r#"{"session_id":"a","title":"Allow?","message":"rm -rf build","tool_use_id":"tool-A"}"#,
+    )
+    .to_request();
+  test::call_service(&app, ask).await;
+  let finished = |tool: &str| {
+    working_request(&format!(
+      r#"{{"session_id":"a","only_if_waiting":true,"tool_use_id":"{tool}"}}"#
+    ))
+    .to_request()
+  };
+  let other: serde_json::Value = test::call_and_read_body_json(&app, finished("tool-B")).await;
+  assert_eq!(other["updated"], false);
+  assert_eq!(row_state(&state, "a"), Some(TaskState::InputNeeded));
+  let same: serde_json::Value = test::call_and_read_body_json(&app, finished("tool-A")).await;
+  assert_eq!(same["updated"], true);
+  assert_eq!(row_state(&state, "a"), Some(TaskState::Working));
+  assert!(state.notifications.lock().unwrap().waiting_tools.is_empty());
+  let bad = working_request(r#"{"session_id":"a","tool_use_id":"x\u0007"}"#).to_request();
+  assert_eq!(
+    test::call_service(&app, bad).await.status(),
+    StatusCode::BAD_REQUEST
+  );
 }

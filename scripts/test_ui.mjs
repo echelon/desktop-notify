@@ -65,7 +65,9 @@ test('Focus leaves all rows available for global sound stopping and clearing', a
   await page.element('silence-all').handlers.click();
   assert.deepEqual(page.calls.at(-1), ['silence_all_sound', undefined]);
   page.update([notification('a', { silenced: true }), notification('b', { silenced: true })], true, { alerting: false });
-  assert.equal(page.row('a').find('row-sound').hidden, false);
+  // Legacy rows without `state` derive it from kind/silenced.
+  assert.equal(page.row('a').find('kind').textContent, 'Input needed · ignored');
+  assert.equal(page.row('a').find('acknowledge').hidden, true);
   assert.equal(page.element('silence-all').disabled, true);
   assert.equal(page.element('sound-status').textContent, 'All sounds stopped');
   await page.row('b').find('clear').handlers.click();
@@ -192,4 +194,35 @@ test('sound failures surface in the sound bar without touching rows', async () =
   assert.match(page.element('sound-status').textContent, /Service offline/);
   assert.equal(page.row('a').find('focus-status').hidden, true);
   assert.equal(page.element('snooze-1').disabled, false);
+});
+
+test('each task shows its state and can be dismissed without affecting the others', async () => {
+  const page = await ui([
+    notification('a', { state: 'input_needed' }),
+    notification('b', { state: 'done', kind: 'all_tasks_finished' }),
+    notification('c', { state: 'working', kind: 'working' }),
+    notification('d', { state: 'failed', kind: 'task_failed' }),
+  ]);
+  const label = (id) => page.row(id).find('kind').textContent;
+  assert.deepEqual(['a', 'b', 'c', 'd'].map(label), ['Input needed', 'Finished', 'Working', 'Failed']);
+  assert.equal(page.row('c').dataset.state, 'working');
+  // Busy rows have nothing to dismiss; alerting rows do.
+  assert.equal(page.row('c').find('acknowledge').hidden, true);
+  assert.equal(page.row('b').find('acknowledge').hidden, false);
+  await page.row('b').find('acknowledge').handlers.click();
+  assert.equal(JSON.stringify(page.calls.at(-1)), '["acknowledge_notification",{"id":"b"}]');
+  assert.ok(!page.calls.some(([name]) => name === 'dismiss_notification' || name === 'silence_all_sound'));
+  page.update([
+    notification('a', { state: 'input_needed' }),
+    notification('b', { state: 'done_acknowledged', kind: 'all_tasks_finished', silenced: true }),
+    notification('c', { state: 'working', kind: 'working' }),
+    notification('d', { state: 'failed', kind: 'task_failed' }),
+  ]);
+  assert.equal(label('b'), 'Finished · seen');
+  assert.equal(page.row('b').find('acknowledge').hidden, true);
+  assert.equal(page.row('a').find('acknowledge').hidden, false);
+  assert.equal(page.row('d').find('acknowledge').hidden, false);
+  // Offline disables dismissal like the other service actions.
+  page.update([notification('a', { state: 'input_needed' })], false);
+  assert.equal(page.row('a').find('acknowledge').disabled, true);
 });

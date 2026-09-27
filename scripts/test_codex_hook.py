@@ -1,6 +1,8 @@
 import contextlib
 import io
 import json
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -9,6 +11,10 @@ import codex_hook as hook
 
 class HookTests(unittest.TestCase):
     def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.event_log = Path(directory.name) / "hook-events.jsonl"
+        patch.object(hook, "EVENT_LOG", self.event_log).start()
         patch.dict(hook.os.environ, {}, clear=True).start()
         self.context = patch.object(hook, "capture_context", return_value={}).start()
         self.origin = patch.object(hook, "capture_origin", return_value=None).start()
@@ -65,6 +71,73 @@ class HookTests(unittest.TestCase):
         missing = {"hook_event_name": "Stop", "transcript_path": "/nonexistent/transcript.jsonl"}
         self.assertEqual(hook.notification_for(missing)[1]["message"], "The agent finished its turn.")
 
+    def run_hook(self, event, version=4):
+        """Run main() against a fake service; returns [(endpoint, payload)] posted."""
+        posts = []
+        def http(path, payload=None, timeout=2):
+            if path == "/health":
+                return {"service": "desktop-notify", "api_version": version}
+            posts.append((path, payload))
+            return {"updated": True} if path == "/working" else {"id": "x"}
+        out = io.StringIO()
+        with patch("sys.stdin", io.StringIO(json.dumps(event))), contextlib.redirect_stdout(out), \
+             patch.object(hook, "ensure_server") as ensure, patch.object(hook, "http", side_effect=http):
+            hook.main()
+        self.assertEqual(json.loads(out.getvalue()), {})
+        return posts, ensure
+
+    def test_prompt_submission_marks_the_session_working_without_starting_the_service(self):
+        self.origin.return_value = {"terminal_app": "ghostty"}
+        posts, ensure = self.run_hook({"hook_event_name": "UserPromptSubmit", "session_id": "s1",
+                                       "cwd": "/work/app", "prompt": "Fix **login**\nthen tests"})
+        self.assertEqual(posts[0][0], "/working")
+        self.assertEqual(posts[0][1]["title"], "app: Fix login")
+        self.assertEqual(posts[0][1]["origin"], {"terminal_app": "ghostty"})
+        ensure.assert_not_called()
+
+    def test_post_tool_use_is_minimal_and_only_resumes_waiting_rows(self):
+        posts, ensure = self.run_hook({"hook_event_name": "PostToolUse", "session_id": "s1", "tool_name": "Bash"})
+        self.assertEqual(posts, [("/working", {"session_id": "s1", "only_if_waiting": True})])
+        ensure.assert_not_called()
+        self.context.assert_not_called()
+        self.origin.assert_not_called()
+        posts, _ = self.run_hook({"hook_event_name": "PostToolUse", "session_id": "s1", "tool_use_id": "t1"})
+        self.assertEqual(posts[0][1]["tool_use_id"], "t1")
+        question = hook.notification_for({"hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "tool_use_id": "t2"})
+        self.assertEqual(question[1]["tool_use_id"], "t2")
+        # No session to update, or an older service without task states: skip quietly.
+        self.assertEqual(self.run_hook({"hook_event_name": "PostToolUse"})[0], [])
+        self.assertEqual(self.run_hook({"hook_event_name": "PostToolUse", "session_id": "s1"}, version=3)[0], [])
+
+    def test_stop_failure_reports_a_failed_task_and_degrades_on_older_services(self):
+        event = {"hook_event_name": "StopFailure", "session_id": "s1", "error": "rate_limit"}
+        posts, ensure = self.run_hook(event)
+        self.assertEqual(posts[0][0], "/task_failed")
+        self.assertEqual(posts[0][1]["message"], "rate_limit")
+        ensure.assert_called_once()
+        self.assertEqual(self.run_hook(event, version=3)[0][0][0], "/all_tasks_finished")
+
+    def test_each_hook_decision_is_recorded_with_its_reason(self):
+        self.run_hook({"hook_event_name": "Stop", "session_id": "s1",
+                       "last_assistant_message": "Done.\n\nWaiting for your approval of the plan."})
+        self.run_hook({"hook_event_name": "PostToolUse", "session_id": "s1", "tool_name": "Bash", "tool_use_id": "t"})
+        stop, tool = [json.loads(line) for line in self.event_log.read_text().splitlines()]
+        self.assertEqual((stop["action"], stop["closing"]), ("/awaiting_user_input", "Waiting for your approval of the plan."))
+        self.assertEqual((tool["action"], tool["tool_name"], tool["updated"]), ("/working", "Bash", True))
+        self.assertIn("ms", tool)
+        with patch("sys.stdin", io.StringIO("not json")), contextlib.redirect_stdout(io.StringIO()):
+            hook.main()
+        self.assertIn("error", json.loads(self.event_log.read_text().splitlines()[-1]))
+
+    def test_event_log_rolls_over_to_its_newest_half(self):
+        with patch.object(hook, "EVENT_LOG_LIMIT", 2000):
+            for n in range(100):
+                hook.record({"n": n, "pad": "x" * 40})
+        numbers = [json.loads(line)["n"] for line in self.event_log.read_text().splitlines()]
+        self.assertLessEqual(self.event_log.stat().st_size, 2000)
+        self.assertEqual(numbers[-1], 99)
+        self.assertEqual(numbers, list(range(numbers[0], 100)))
+
     def test_session_fallback_and_legacy_payload(self):
         event = {"hook_event_name": "Stop"}
         self.assertNotIn("session_id", hook.notification_for(event)[1])
@@ -113,6 +186,15 @@ class HookTests(unittest.TestCase):
             "description": "Allow deployment?", "command": command}})
         self.assertEqual(endpoint, "/awaiting_user_input")
         self.assertIn("$(touch /tmp/should-not-exist)", payload["message"])
+
+    def test_only_the_closing_paragraph_decides_a_finished_turn_is_waiting(self):
+        summary = ("Each task now has its own state.\n\n- If one tool is waiting for your approval and "
+                   "another finishes, the prompt stays open.\n- Should rows dim?\n\nNothing is committed.")
+        self.assertEqual(hook.notification_for({"hook_event_name": "Stop", "last_assistant_message": summary})[0],
+                         "/all_tasks_finished")
+        asks = summary + "\n\nShould I commit these changes?"
+        self.assertEqual(hook.notification_for({"hook_event_name": "Stop", "last_assistant_message": asks})[0],
+                         "/awaiting_user_input")
 
     def test_plain_text_question_is_awaiting(self):
         for message in ("Which option?", "I need your approval to continue."):

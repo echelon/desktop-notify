@@ -17,8 +17,14 @@ header { display: flex; align-items: center; justify-content: space-between; pad
 main { flex: 1; min-height: 0; overflow: auto; padding: 5px 16px; }
 .notification { padding: 14px 0; border-bottom: 1px solid var(--border); }
 .notification:last-child { border-bottom: 0; }
-.notification[data-kind="awaiting_user_input"] { --accent: #f4bc70; }
-.notification[data-kind="all_tasks_finished"] { --accent: #7cdbad; }
+.notification[data-state^="input_needed"] { --accent: #f4bc70; }
+.notification[data-state^="done"] { --accent: #7cdbad; }
+.notification[data-state^="failed"] { --accent: #ff8f8f; }
+.notification[data-state="working"] { --accent: #8fb4ff; }
+.notification.quiet .kind, .notification.quiet .task-title { opacity: .6; }
+.notification[data-state="working"] .kind::before { content: ''; display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: currentColor; margin-right: 5px; vertical-align: 1px; animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .notification[data-state="working"] .kind::before { animation: none; } }
 .row-heading { display: flex; align-items: flex-start; gap: 12px; }
 .row-info { flex: 1; min-width: 0; }
 .eyebrow { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 10px; }
@@ -40,12 +46,12 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 5px 16px; }
 .summary { color: var(--muted); font-size: 11px; cursor: pointer; width: fit-content; }
 .message { padding-top: 8px; color: #afbdd4; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.65; user-select: text; -webkit-user-select: text; }
 .focus-status { margin: 8px 0 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
-.row-sound { color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; flex-shrink: 0; }
 .sound-controls { padding: 10px 16px 9px; border-top: 1px solid var(--border); }
 .sound-buttons { display: flex; gap: 8px; }
 .sound-button { flex: 1; min-width: 0; padding: 9px 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sound-button:hover:not(:disabled) { border-color: var(--accent); }
 .sound-button.stop { flex: 1.3; color: #0b1220; background: #f4bc70; border-color: #f4bc70; }
+.acknowledge { color: var(--accent); }
 .sound-button.stop:hover:not(:disabled) { background: #f7cd92; border-color: #f7cd92; }
 .sound-status { margin: 7px 0 0; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .sound-controls.snoozed .sound-status { color: #b7a6ff; }

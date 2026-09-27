@@ -27,9 +27,12 @@ The server listens on `127.0.0.1:43110` by default. Override with
 | POST   | `/all_tasks_finished` | JSON `{title, message, session_id?, context?}`; done loop plus dismissible desktop alert. |
 | GET    | `/notifications` | All session rows, newest update first. |
 | GET    | `/notification` | Latest row (legacy compatibility). |
-| POST   | `/silence/{id}` | Stop sound for this entry, keeping its status and focus target. |
+| POST   | `/working` | JSON `{session_id, title?, message?, context?, origin?, only_if_waiting?, tool_use_id?}`; mark the session busy (no alert). `only_if_waiting` only resumes an `input_needed*` row, never creates one. Returns `{updated, notification?}`. |
+| POST   | `/task_failed` | Like `/all_tasks_finished`, for a turn that ended on an error; alerts with the await sound. |
+| POST   | `/acknowledge/{id}` | Dismiss one alerting row: `done`→`done_acknowledged`, `input_needed`→`input_needed_ignored`, `failed`→`failed_acknowledged`. It stays listed; others keep alerting. |
+| POST   | `/silence/{id}` | Legacy name for `/acknowledge/{id}`. |
 | GET    | `/sound` | `{snoozed_until, alerting}`; `snoozed_until` is RFC 3339 UTC or `null`. |
-| POST   | `/sound/silence` | Global Stop sound: silence every current row and cancel any snooze. |
+| POST   | `/sound/silence` | Global Stop sound: acknowledge every alerting row and cancel any snooze. |
 | POST   | `/sound/snooze` | JSON `{seconds}` (1–86400); mute all sound until that wall-clock time. |
 | POST   | `/sound/resume` | End a snooze early. |
 | POST   | `/dismiss/{id}` | Clear this entry only; stale alert IDs cannot clear newer updates. |
@@ -44,7 +47,10 @@ The server listens on `127.0.0.1:43110` by default. Override with
 | GET    | `/stop`        | Stop everything — loops *and* queued one-shots.                                              |
 | GET    | `/state`       | Read-only JSON snapshot of the audio engine and loaded config. Does **not** change playback. |
 
-Notification updates replace only the matching `session_id`. Omitted IDs use one
+Each row carries `state` (`working`, `input_needed`, `input_needed_ignored`,
+`done`, `done_acknowledged`, `failed`, `failed_acknowledged`); `kind` and
+`silenced` remain for older clients. `/awaiting_user_input` accepts an optional
+`tool_use_id`. Notification updates replace only the matching `session_id`. Omitted IDs use one
 legacy row. The shared sound loop prioritizes unsilenced questions, then the
 latest completion. Clearing or silencing a row leaves other sessions intact and
 plays the next outstanding alert if necessary. A snooze stores its deadline and

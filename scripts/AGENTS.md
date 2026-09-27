@@ -67,6 +67,9 @@ Resolve repository paths from `__file__`, since hooks run from other directories
 - Editing repository scripts does not itself require installing hooks: installed
   commands load the script on each invocation. Definitions changed by installation
   require a new Codex session. Honor `CODEX_HOME` in installer paths.
+- `codex_hook.py` appends every decision to the rolling `target/hook-events.jsonl`
+  (never failing the hook) and rotates the service log on start. Tests must patch
+  `EVENT_LOG` to a temporary file.
 - Run `python3 -m unittest discover -s scripts -p 'test_*.py'` for Python changes;
   run `node --test scripts/test_ui.mjs` for the UI test harness. Mock local HTTP,
   processes, transcripts, environment, and home/config files in unit tests.

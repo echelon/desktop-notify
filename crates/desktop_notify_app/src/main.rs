@@ -88,6 +88,12 @@ fn window_ready(app: AppHandle, state: State<'_, AppState>) {
   }
 }
 
+/// Per-row dismissal: moves an alerting row to its quiet state and keeps it.
+#[tauri::command]
+async fn acknowledge_notification(id: String, state: State<'_, AppState>) -> Result<(), String> {
+  update_notification(&id, "acknowledge", &state).await
+}
+
 #[tauri::command]
 async fn dismiss_notification(id: String, state: State<'_, AppState>) -> Result<(), String> {
   update_notification(&id, "dismiss", &state).await
@@ -217,7 +223,7 @@ fn start_polling(app: AppHandle) {
           &next
             .notifications
             .iter()
-            .map(|n| n.id.as_str())
+            .map(|n| (n.id.as_str(), n.task_state().is_alerting()))
             .collect::<Vec<_>>(),
         );
         let changed = *previous != next;
@@ -227,18 +233,28 @@ fn start_polling(app: AppHandle) {
       if changed {
         let _ = app.emit(EVENT, &snapshot);
         if let Some(tray) = app.tray_by_id("main") {
-          let count = snapshot.notifications.len();
-          let tooltip = if count == 0 {
+          let alerting = snapshot
+            .notifications
+            .iter()
+            .filter(|n| n.task_state().is_alerting())
+            .count();
+          let tooltip = if snapshot.notifications.is_empty() {
             "Desktop Notify — All caught up".into()
           } else {
             format!(
-              "Desktop Notify — {count} agent status{}",
-              if count == 1 { "" } else { "es" }
+              "Desktop Notify — {alerting} of {} agent task{} need attention",
+              snapshot.notifications.len(),
+              if snapshot.notifications.len() == 1 {
+                ""
+              } else {
+                "s"
+              }
             )
           };
           let _ = tray.set_tooltip(Some(&tooltip));
+          // The dot marks tasks that need attention, not busy or seen ones.
           #[cfg(target_os = "macos")]
-          let _ = tray.set_title((!snapshot.notifications.is_empty()).then_some("•"));
+          let _ = tray.set_title((alerting > 0).then_some("•"));
         }
       }
       if state.ready.load(Ordering::SeqCst) {
@@ -344,6 +360,7 @@ fn main() {
       hide_window,
       focus_notification,
       dismiss_notification,
+      acknowledge_notification,
       silence_all_sound,
       snooze_sound
     ])

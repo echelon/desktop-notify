@@ -11,6 +11,23 @@ const statuses = new Map();
 let soundPending = false;
 let soundError = '';
 
+const STATES = {
+  working: { label: 'Working', alerting: false },
+  input_needed: { label: 'Input needed', alerting: true },
+  input_needed_ignored: { label: 'Input needed · ignored', alerting: false },
+  done: { label: 'Finished', alerting: true },
+  done_acknowledged: { label: 'Finished · seen', alerting: false },
+  failed: { label: 'Failed', alerting: true },
+  failed_acknowledged: { label: 'Failed · seen', alerting: false },
+};
+// Rows from an older service carry only kind/silenced.
+function taskState(alert) {
+  if (STATES[alert.state]) return alert.state;
+  if (alert.kind === 'working') return 'working';
+  const base = { awaiting_user_input: 'input_needed', task_failed: 'failed' }[alert.kind] || 'done';
+  return alert.silenced ? { input_needed: 'input_needed_ignored', failed: 'failed_acknowledged', done: 'done_acknowledged' }[base] : base;
+}
+
 function element(tag, className, text) {
   const node = document.createElement(tag);
   node.className = className;
@@ -27,20 +44,22 @@ function createRow(alert) {
   const kind = element('span', 'kind');
   const project = element('span', 'project');
   const session = element('span', 'session');
-  const sound = element('span', 'row-sound', 'Muted');
-  sound.title = 'Sound stopped for this entry; a new update will sound again';
-  eyebrow.append(kind, project, session, sound);
+  eyebrow.append(kind, project, session);
   const title = element('h2', 'task-title');
   const preview = element('p', 'context-preview');
   info.append(eyebrow, title, preview);
   const controls = element('div', 'row-controls');
   const focus = element('button', 'secondary focus', 'Focus');
   focus.addEventListener('click', () => focusTerminal(alert.id));
+  const acknowledge = element('button', 'secondary acknowledge', 'Dismiss');
+  acknowledge.title = 'Stop alerting for this task; keep it listed. Other tasks keep alerting.';
+  acknowledge.setAttribute('aria-label', `Dismiss ${alert.title}`);
+  acknowledge.addEventListener('click', () => updateNotification(alert.id, 'acknowledge_notification'));
   const clear = element('button', 'icon-button clear', '×');
   clear.title = 'Clear this entry and its sound';
   clear.setAttribute('aria-label', `Clear ${alert.title}`);
   clear.addEventListener('click', () => updateNotification(alert.id, 'dismiss_notification'));
-  controls.append(focus, clear);
+  controls.append(focus, acknowledge, clear);
   heading.append(info, controls);
   const details = element('details', 'details');
   const summary = element('summary', 'summary', 'View message');
@@ -59,7 +78,7 @@ function createRow(alert) {
   const status = element('p', 'focus-status');
   status.setAttribute('role', 'status');
   row.append(heading, details, status);
-  return { row, kind, project, session, title, preview, summary, context, fields, focus, clear, message, status, sound };
+  return { row, kind, project, session, title, preview, summary, context, fields, focus, acknowledge, clear, message, status };
 }
 
 const optionalText = (value) => typeof value === 'string' ? value.trim() : '';
@@ -115,8 +134,11 @@ function render(next) {
   alerts.forEach((alert, index) => {
     if (!rows.has(alert.id)) rows.set(alert.id, createRow(alert));
     const refs = rows.get(alert.id);
+    const state = taskState(alert);
     refs.row.dataset.kind = alert.kind;
-    refs.kind.textContent = alert.kind === 'awaiting_user_input' ? 'Input needed' : 'Finished';
+    refs.row.dataset.state = state;
+    refs.row.classList.toggle('quiet', !STATES[state].alerting);
+    refs.kind.textContent = STATES[state].label;
     refs.session.textContent = alert.session_id ? `Session ${alert.session_id.slice(-8)}` : 'Unassigned';
     refs.session.title = alert.session_id || 'No session ID supplied';
     refs.title.textContent = alert.title;
@@ -129,7 +151,9 @@ function render(next) {
     refs.focus.textContent = focusing.has(alert.id) ? 'Focusing…' : 'Focus';
     refs.focus.title = canFocus ? 'Focus the requesting terminal; keep this entry visible' : 'No terminal information was supplied';
     refs.clear.disabled = pending.has(alert.id) || !next.connected;
-    refs.sound.hidden = !alert.silenced;
+    // Only alerting rows can be dismissed; quiet rows are already acknowledged.
+    refs.acknowledge.hidden = !STATES[state].alerting;
+    refs.acknowledge.disabled = pending.has(alert.id) || !next.connected;
     refs.status.hidden = !statuses.has(alert.id);
     refs.status.textContent = statuses.get(alert.id) || '';
     const list = byId('notifications');
@@ -146,7 +170,7 @@ function formatRemaining(ms) {
   return `${hours ? `${hours}:${minutes.padStart(2, '0')}` : minutes}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
-/* Sound is global: every unsilenced row feeds one shared loop. The service owns
+/* Sound is global: every alerting row feeds one shared loop. The service owns
    the snooze deadline; this only compares it with the clock for the countdown. */
 function renderSound() {
   const sound = snapshot.sound || {};

@@ -73,7 +73,7 @@ def run(restart=False):
             list(pool.map(invoke, [{**done, "session_id": session} for session in sessions]))
         health = hook.http("/health")
         pid = health["pid"]
-        assert health["api_version"] == 3
+        assert health["api_version"] == 4
         if previous_pid:
             assert pid != previous_pid
         a, b = [session_notification(session) for session in sessions]

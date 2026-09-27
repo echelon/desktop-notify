@@ -26,6 +26,9 @@ pub struct NotificationState {
   /// Wall-clock deadline for a global snooze. It is compared with the current
   /// time whenever state is touched rather than woken by a timer.
   pub snoozed_until: Option<DateTime<Utc>>,
+  /// Session ID → the tool call an `input_needed` row is waiting on. Tools run in
+  /// parallel, so only that call finishing may resume the row to `working`.
+  pub waiting_tools: std::collections::HashMap<String, String>,
   pub desktop: DesktopStatus,
   pub desktop_seen: Option<Instant>,
 }

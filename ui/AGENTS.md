@@ -21,10 +21,13 @@ Use two-space JavaScript indentation and follow the existing CSS style/tokens.
 
 ## Product behavior
 
-- Keep Focus, Stop sound, Clear, and Hide distinct. Focus must not invoke hide,
-  silence, or dismiss. Stop sound and Snooze are global controls in the bar above
-  the footer; they retain every row. Clear targets only its row. Hide and
-  keyboard shortcuts only hide the window.
+- Keep Focus, Dismiss, Stop sound, Clear, and Hide distinct. Focus must not invoke
+  hide, acknowledge, or clear. Dismiss (`acknowledge_notification`) appears only on
+  alerting rows and acknowledges that row alone. Stop sound and Snooze are global
+  controls in the bar above the footer; they retain every row. Clear (×) removes
+  only its row. Hide and keyboard shortcuts only hide the window.
+- Label rows by `state` (derive it from `kind`/`silenced` for older services);
+  quiet rows are dimmed and `working` shows a pulse, which honors reduced motion.
 - The service owns the snooze deadline. The UI only compares it with `Date.now()`
   for the countdown; never resume or re-snooze from a UI timer.
 - Disable Focus when usable origin hints are absent. Reflect pending operations

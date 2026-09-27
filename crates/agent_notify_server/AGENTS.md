@@ -29,14 +29,20 @@ Inherit the root rules, including **two-space Rust indentation**.
   leave an older sound playing over newer state. Do not hold locks across awaits.
 - Silence/dismiss operate on the current notification ID. Stale IDs are harmless
   and return `stopped: false`; never resolve them to the session's replacement.
-- Audio selection is the newest unsilenced question, otherwise the newest
-  unsilenced completion. If `audio_id` is unchanged, leave playback alone.
+- Rows change state only through `Notification::set_state`. Audio plays the newest
+  `input_needed`, else `failed`, else `done` row. If `audio_id` is unchanged,
+  leave playback alone. `/acknowledge` (alias `/silence`) moves one alerting row
+  to its quiet state; global Stop sound does so for all of them.
+- `/working` never alerts. With `only_if_waiting` it must not create rows or
+  revive finished ones, and must not resume a row waiting on a different
+  `tool_use_id` (`waiting_tools`). Every replacement forgets the previous waiting
+  tool.
 - Sound controls are global. `/sound/silence` silences every current row; a
   snooze stores a chrono `DateTime<Utc>` deadline and mutes the loop without
   silencing rows. Never use a timer or sleep for snooze expiry: compare the
   deadline with `Utc::now()` when state is locked (`lock_and_resume`). Deadlines
   beyond `MAX_SNOOZE` mean the clock moved backwards and count as elapsed.
-- `/notifications` includes silenced rows; `/notification` returns the newest row
+- `/notifications` includes quiet rows; `/notification` returns the newest row
   for older clients. Preserve legacy `/state` fields alongside the list and
   `audio_notification_id`. Read endpoints must not alter playback, except that
   resuming an elapsed snooze on any read is how expiry is observed.

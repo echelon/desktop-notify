@@ -23,26 +23,43 @@ CONFIG_PATH = CODEX_DIR / "config.toml"
 COMMAND = shlex.join([sys.executable, str(ROOT / "scripts/codex_hook.py")])
 OLD_COMMAND = "for i in 1 2 3; do afplay /Users/bt/dev/storyteller/artcraft/frontend/apps/artcraft/app/public/resources/sound/smrpg_flower.wav ; sleep 0.5; done &"
 MATCHER = r"(^|.*[._])(request_user_input(_async)?|AskUserQuestion)$"
+STATUS = "Notifying through Desktop Notify"
+# (event, matcher, timeout seconds, status message). Alerts may cold-build and
+# start the service, hence 720 s. Working updates never start it, so they get
+# short limits and no status line (PostToolUse runs after every tool). All are
+# synchronous: an asynchronous PostToolUse could land after a newer question.
+EVENTS = [
+    ("Stop", None, 720, STATUS),
+    ("PermissionRequest", None, 720, STATUS),
+    ("PreToolUse", MATCHER, 720, STATUS),
+    ("UserPromptSubmit", None, 30, None),
+    ("PostToolUse", None, 10, None),
+]
+# Claude Code also reports turns that end on an API error.
+CLAUDE_EVENTS = EVENTS + [("StopFailure", None, 720, STATUS)]
 CLAUDE_SETTINGS = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "settings.json"
 # Earlier Claude Code wiring called legacy sound-only endpoints: /loop_* and /stop
 # clear every session's row, so they must not run alongside the row-based hook.
 LEGACY_CLAUDE_SCRIPTS = ("agent_notify.sh", "agent_notify_on_notification.sh")
 
 
+def hook_group(matcher, timeout, status):
+    handler = {"type": "command", "command": COMMAND, "timeout": timeout}
+    if status:
+        handler["statusMessage"] = status
+    return {"hooks": [handler], **({"matcher": matcher} if matcher else {})}
+
+
 def configuration():
     document = json.loads(HOOKS_PATH.read_text()) if HOOKS_PATH.exists() else {"hooks": {}}
     hooks = document.setdefault("hooks", {})
-    for name in ("Stop", "PermissionRequest", "PreToolUse"):
+    for name, matcher, timeout, status in EVENTS:
         groups = []
         for group in hooks.get(name, []):
             handlers = [h for h in group.get("hooks", []) if h.get("command") not in (OLD_COMMAND, COMMAND)]
             if handlers:
                 groups.append({**group, "hooks": handlers})
-        group = {"hooks": [{"type": "command", "command": COMMAND, "timeout": 720,
-                            "statusMessage": "Notifying through Desktop Notify"}]}
-        if name == "PreToolUse":
-            group["matcher"] = MATCHER
-        groups.append(group)
+        groups.append(hook_group(matcher, timeout, status))
         hooks[name] = groups
     return document
 
@@ -64,12 +81,8 @@ def claude_configuration():
             hooks[name] = groups
         else:
             del hooks[name]
-    for name in ("Stop", "PermissionRequest", "PreToolUse"):
-        group = {"hooks": [{"type": "command", "command": COMMAND, "timeout": 720,
-                            "statusMessage": "Notifying through Desktop Notify"}]}
-        if name == "PreToolUse":
-            group["matcher"] = MATCHER
-        hooks.setdefault(name, []).append(group)
+    for name, matcher, timeout, status in CLAUDE_EVENTS:
+        hooks.setdefault(name, []).append(hook_group(matcher, timeout, status))
     return document
 
 
@@ -95,8 +108,8 @@ def own_hooks(rpc):
             raise RuntimeError(entry["errors"])
         hooks.extend(h for h in entry["hooks"]
                      if h["sourcePath"] == str(HOOKS_PATH) and h.get("command") == COMMAND)
-    if len(hooks) != 3:
-        raise RuntimeError(f"Expected 3 Desktop Notify hooks, got {len(hooks)}")
+    if len(hooks) != len(EVENTS):
+        raise RuntimeError(f"Expected {len(EVENTS)} Desktop Notify hooks, got {len(hooks)}")
     return hooks
 
 
