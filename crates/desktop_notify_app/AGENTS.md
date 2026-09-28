@@ -11,6 +11,8 @@ frontend lives in `../../ui/` and has its own rules.
   tauri-build pins in `Cargo.toml`.
 - Keep native macOS work in the existing objc2/AppKit integration and fixed
   `src/focus/*.applescript` adapters, guarded by macOS cfgs.
+- The app is a stateless client of the HTTP API: it keeps only the last poll
+  and transient UI state, never task state of its own.
 - Rust owns HTTP requests. JavaScript uses Tauri commands and the
   `notification-state` event. Preserve the narrow capabilities and CSP in the
   Tauri configuration when adding a command or UI feature.

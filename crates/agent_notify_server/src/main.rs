@@ -4,9 +4,10 @@
 //!
 //! Audio playback runs on a dedicated OS thread (see [`audio_player`]). The
 //! actix server itself is single-worker — we expect only the local agent to
-//! call it. On SIGINT we tell actix to skip its grace period and we ship a
+//! call it. On SIGINT/SIGTERM we tell actix to skip its grace period, write a
+//! best-effort task backup (bounded by a deadline; see [`backup`]), and ship a
 //! `Shutdown` command to the audio thread so any in-progress sound is dropped
-//! immediately.
+//! immediately. SIGKILL cannot be caught; the periodic backup covers it.
 
 use std::env;
 use std::path::PathBuf;
@@ -25,6 +26,7 @@ use crate::endpoints::stop_handler;
 use crate::server_state::ServerState;
 
 pub mod audio_player;
+pub mod backup;
 pub mod config;
 pub mod endpoints;
 #[cfg(test)]
@@ -61,12 +63,31 @@ async fn main() -> anyhow::Result<()> {
     audio: audio_handle.clone(),
     notifications: Arc::new(Mutex::new(Default::default())),
   };
+  // A convenience only: the backup seeds this fresh process, and live state is
+  // authoritative from here on. Resolve the port before binding so a bind
+  // failure (another instance owns the port) leaves its backup untouched.
+  let backup_path = bind_address
+    .parse::<std::net::SocketAddr>()
+    .map(|address| backup::default_path(address.port()))
+    .ok();
+  if let Some(restored) = backup_path.as_deref().and_then(backup::load) {
+    let mut current = state
+      .notifications
+      .lock()
+      .unwrap_or_else(|e| e.into_inner());
+    restored.restore_into(&mut current);
+    log::info!("restored {} tasks from backup", current.active.len());
+    // Alerting rows resume their sound, as they would have without a restart.
+    reconcile_audio(&state, &mut current);
+  }
 
   log::info!("agent-notify-server listening on http://{}", bind_address);
 
+  // The shutdown backup reads the same shared state after the server stops.
+  let app_state = state.clone();
   let server = HttpServer::new(move || {
     App::new()
-      .app_data(Data::new(state.clone()))
+      .app_data(Data::new(app_state.clone()))
       .app_data(web::JsonConfig::default().limit(32 * 1024))
       .wrap(
         Logger::default()
@@ -96,7 +117,21 @@ async fn main() -> anyhow::Result<()> {
   })
   .bind(&bind_address)?;
   notifications::launch_desktop_app(server.addrs()[0]);
-  server.workers(1).shutdown_timeout(0).run().await?;
+  if let Some(path) = &backup_path {
+    backup::spawn_periodic(path.clone(), state.notifications.clone());
+  }
+  let result = server.workers(1).shutdown_timeout(0).run().await;
+
+  if let Some(path) = backup_path {
+    let snapshot = backup::Backup::of(
+      &state
+        .notifications
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()),
+    );
+    backup::write_with_deadline(path, snapshot, backup::SHUTDOWN_DEADLINE);
+  }
+  result?;
 
   log::info!("server stopped; shutting down audio engine");
   audio_handle.shutdown();

@@ -46,7 +46,9 @@ the start). They return `{id,
 session_id?, state, title, message, context?, origin?, agent?, times?}`. Each session has
 one row: an update replaces only that session's row with a fresh `id` and its new
 state. Requests without `session_id` share one unassigned row. Rows are ordered
-by most recent update and live in memory until cleared or the server restarts.
+by most recent update and live in memory until cleared. A best-effort backup in
+`/tmp/desktop-notify/` (written every 5 minutes and on SIGTERM) lets them survive
+a service restart, but not a reboot.
 
 - Every row has a `state`: `working` (busy, quiet), `input_needed`, `done`,
   `failed` (alerting), or the quiet `input_needed_ignored`, `done_acknowledged`,

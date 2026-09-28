@@ -11,6 +11,12 @@ Inherit the root rules, including **two-space Rust indentation**.
 - `audio_player.rs` owns rodio's output stream on a dedicated OS thread (the
   stream is not Send on every platform). Handlers send `AudioCommand`s through
   `AudioPlayerHandle`; do not move audio playback into request handlers.
+- `backup.rs` owns the best-effort `/tmp/desktop-notify/state-<port>.toml`
+  backup (Serde TOML): restored once at startup, refreshed every 5 minutes
+  when changed, and written on shutdown under `SHUTDOWN_DEADLINE`. In-memory
+  state stays authoritative. Revalidate restored rows, ignore unreadable or
+  non-private files, and never let backup I/O block a request, startup, or
+  exit. Copy state under the lock and write after releasing it.
 - `config.rs` reads Serde YAML. Sound paths resolve relative to the YAML file,
   not the working directory. The default path is embedded at build time;
   `NOTIFY_CONFIG_PATH` supplies an override.
@@ -40,9 +46,10 @@ Inherit the root rules, including **two-space Rust indentation**.
 - `times` is set here from `Utc::now()`, never from requests (`next_times` in
   `notification_handlers.rs`). Unknown moments stay `None`; the only backfill is
   an alert's `turn_started_at`, which must stay rejected when in the future or
-  not after the session's previous `task_finished_at`. Dismissals set `dismissed_at` but not `updated_at`. User actions
-  (Dismiss, Stop sound, `/focused`) set `user_action_at`; `user_input_at` is set
-  by every move to `working`. `/focused` must never change state, order, or audio.
+  not after the session's previous `task_finished_at`. Dismissals set
+  `dismissed_at` but not `updated_at`. User actions (Dismiss, Stop sound,
+  `/focused`) set `user_action_at`; `user_input_at` is set by every move to
+  `working`. `/focused` must never change state, order, or audio.
 - Sound controls are global. `/sound/stop` acknowledges every alerting row; a
   snooze stores a chrono `DateTime<Utc>` deadline and mutes the loop without
   silencing rows. Never use a timer or sleep for snooze expiry: compare the

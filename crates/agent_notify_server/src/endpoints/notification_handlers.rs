@@ -446,7 +446,7 @@ pub(crate) fn sound_state(current: &NotificationState) -> notify_types::SoundSta
 /// failures, then completions. Changes to other rows must not restart or stop
 /// this loop. A global snooze mutes the loop without changing row states, so
 /// it resumes afterwards.
-fn reconcile_audio(state: &ServerState, current: &mut NotificationState) {
+pub(crate) fn reconcile_audio(state: &ServerState, current: &mut NotificationState) {
   if current.snoozed_until.is_some() && !snooze_active(current, Utc::now()) {
     current.snoozed_until = None;
   }

@@ -53,7 +53,10 @@ Rows carry `state` (`working`, `input_needed`, `input_needed_ignored`, `done`,
 context, origin, and agent when an update omits them. One shared loop plays for
 the newest `input_needed`, else `failed`, else `done` row. A snooze stores its
 deadline and mutes the loop without changing rows; the next request after it
-passes (the app polls every 400 ms) resumes sound. Rows are held in memory.
+passes (the app polls every 400 ms) resumes sound. Rows are held in memory, with
+a best-effort TOML backup at `/tmp/desktop-notify/state-<port>.toml` (every 5
+minutes and on SIGTERM/SIGINT) that a restarted service restores once. The
+backup is never authoritative, and failures to read or write it are ignored.
 
 Rows also carry optional service-assigned `times` (RFC 3339 UTC): `tracked_since`
 (first report, kept until cleared), `updated_at` (latest agent report, including

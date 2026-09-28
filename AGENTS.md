@@ -51,6 +51,13 @@ README and `crates/agent_notify_server/static/index.html` describe the API.
 - The persistent, always-on-top Tauri tray window replaced the Swift/Notification
   Center experiment. Preserve tray recall, all-Spaces/full-screen visibility,
   and reconnection after service restarts.
+- The tray app is a stateless client of the HTTP API. It caches only the last
+  poll (to render, to open the window for new alerting IDs, to stay visible
+  offline, and to find Focus targets) plus transient UI state. Never give it task
+  state or timers of its own; add them to the service and read them.
+- The service's in-memory state is the only source of truth. The `/tmp` task
+  backup is a convenience seed for the next process, never authoritative, and
+  must never block startup, requests, or shutdown.
 - Treat notification text and focus hints as data: render text literally and pass
   process arguments separately. Never interpolate them into executable code.
 - Preserve legacy endpoints and optional-field compatibility when extending the
@@ -273,8 +280,10 @@ installation also registers the exact definitions' trust hashes through Codex's
 config API and verifies them (`--verify`). Editing `scripts/*.py` needs no
 reinstall, because hooks load the script on each run. Changing wire types
 (`notify-types`) needs `python3 scripts/build.py` and a service restart, because
-the server rejects unknown fields. A restart discards in-memory rows, so re-post
-any pending ones.
+the server rejects unknown fields. A clean restart (SIGTERM/SIGINT) restores rows
+from the task backup (see Features); after SIGKILL, rows from the last periodic
+backup return. Never re-post a row by hand as a `/working` prompt: that resets
+its task start.
 
 ## Features
 
@@ -306,6 +315,14 @@ any pending ones.
   it. Hide, Escape, and closing send it to the tray, which recalls it. The tray
   dot and tooltip count tasks needing attention. The app reconnects after service
   restarts and keeps its last snapshot while offline.
+- **Task backup:** the service writes rows, the snooze deadline, and waiting
+  tools as TOML to `/tmp/desktop-notify/state-<port>.toml` (directory 0700,
+  file 0600, atomic rename) every 5 minutes when changed and on SIGTERM/SIGINT,
+  waiting at most 1 s at shutdown. On start it restores that file once, revalidating
+  every row, then resumes sound for alerting rows. Missing, corrupt, other-format,
+  or non-private files are ignored; write failures are logged. It survives
+  service restarts, not reboots. SIGKILL cannot be caught, so it keeps the
+  last periodic backup. Delete the file to start empty.
 - **Logs:** `target/hook-events.jsonl` (rolling, one line per hook decision) and
   `target/desktop-notify.log` (service log with state transitions, rotated at
   5 MB). See troubleshooting.
@@ -435,7 +452,7 @@ is needed. Unit tests use recorded audio commands/mocks; real audio, Spaces,
 Automation, and tray behavior need a live check when affected.
 
 `python3 scripts/smoke_test.py` exercises installed hooks and plays real audio;
-`--restart` additionally restarts the service and clears its in-memory state.
+`--restart` additionally restarts the service (rows return from its task backup).
 `python3 scripts/test_codex_live.py` uses the configured Codex model/account.
 Use these deliberately for relevant integration changes and report what ran.
 
