@@ -40,7 +40,9 @@ app's **Web API ↗** link opens it, and each app button's tooltip names its RES
 The status endpoints (`/awaiting_user_input`, `/all_tasks_finished`,
 `/task_failed`) require nonblank `title` (up to 200 characters) and `message` (up
 to 4,000), and accept optional `session_id` (nonblank, up to 256 bytes, no
-control characters), `context`, `origin`, and `agent`. They return `{id,
+control characters), `context`, `origin`, `agent`, and `turn_started_at` (when
+the agent's transcript says the turn began; used only if the service missed
+the start). They return `{id,
 session_id?, state, title, message, context?, origin?, agent?, times?}`. Each session has
 one row: an update replaces only that session's row with a fresh `id` and its new
 state. Requests without `session_id` share one unassigned row. Rows are ordered

@@ -1145,3 +1145,72 @@ async fn focusing_records_a_user_action_without_changing_the_row() {
   assert_eq!(times(&state, "a").user_action_at, Some(action));
   assert!(times(&state, "a").last_request_at > Some(action));
 }
+
+fn alert_with_start(
+  endpoint: &str,
+  session: &str,
+  start: chrono::DateTime<Utc>,
+) -> test::TestRequest {
+  test::TestRequest::post()
+    .uri(&format!("/{endpoint}"))
+    .set_json(serde_json::json!({
+      "session_id": session, "title": "Task", "message": "Update",
+      "turn_started_at": start.to_rfc3339(),
+    }))
+}
+
+#[actix_web::test]
+async fn a_reported_turn_start_only_fills_an_unknown_start_and_never_reaches_back() {
+  let (state, _commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  // After a restart the service did not see the prompt: the agent's report fills it.
+  let reported = Utc::now() - TimeDelta::minutes(20);
+  let done: Notification = test::call_and_read_body_json(
+    &app,
+    alert_with_start("all_tasks_finished", "a", reported).to_request(),
+  )
+  .await;
+  assert_eq!(done.times.task_started_at, Some(reported));
+  let finished = done.times.task_finished_at.unwrap();
+
+  // A later turn reporting a start from before the previous task ended (stale
+  // transcript data) must not stretch back over it.
+  let failed: Notification = test::call_and_read_body_json(
+    &app,
+    alert_with_start("task_failed", "a", reported).to_request(),
+  )
+  .await;
+  assert_eq!(failed.times.task_started_at, None);
+  // A start after the previous end is a real new turn (e.g. a background task).
+  // It can be marginally ahead of the service clock, which clamps it to now.
+  let previous_end = failed.times.task_finished_at.unwrap();
+  let later = previous_end + TimeDelta::microseconds(1);
+  let next: Notification = test::call_and_read_body_json(
+    &app,
+    alert_with_start("all_tasks_finished", "a", later).to_request(),
+  )
+  .await;
+  let start = next.times.task_started_at.unwrap();
+  assert!(start >= previous_end && start <= later);
+  assert!(finished < previous_end);
+
+  // An observed start wins over a report, and a far-future report is ignored.
+  test::call_service(
+    &app,
+    working_request(r#"{"session_id":"b","title":"Go","message":"Go"}"#).to_request(),
+  )
+  .await;
+  let observed = times(&state, "b").task_started_at;
+  let question: Notification = test::call_and_read_body_json(
+    &app,
+    alert_with_start("awaiting_user_input", "b", reported).to_request(),
+  )
+  .await;
+  assert_eq!(question.times.task_started_at, observed);
+  let future: Notification = test::call_and_read_body_json(
+    &app,
+    alert_with_start("all_tasks_finished", "c", Utc::now() + TimeDelta::hours(1)).to_request(),
+  )
+  .await;
+  assert_eq!(future.times.task_started_at, None);
+}

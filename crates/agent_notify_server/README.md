@@ -28,7 +28,7 @@ endpoint) is in the workspace [AGENTS.md](../../AGENTS.md#http-api-current-api-v
 | Method | Path | Behavior |
 | --- | --- | --- |
 | GET | `/` | Web interface and API reference (permanent). |
-| POST | `/awaiting_user_input` | `{title, message, session_id?, context?, origin?, agent?, tool_use_id?}`; row becomes `input_needed`. |
+| POST | `/awaiting_user_input` | `{title, message, session_id?, context?, origin?, agent?, tool_use_id?, turn_started_at?}`; row becomes `input_needed`. |
 | POST | `/all_tasks_finished` | Same body without `tool_use_id`; row becomes `done`. |
 | POST | `/task_failed` | Same; row becomes `failed`. |
 | POST | `/working` | `{session_id, title?, message?, context?, origin?, agent?, only_if_waiting?, tool_use_id?}`; row becomes `working` (no alert). Returns `{updated, notification?}`. |
@@ -58,7 +58,8 @@ passes (the app polls every 400 ms) resumes sound. Rows are held in memory.
 Rows also carry optional service-assigned `times` (RFC 3339 UTC): `tracked_since`
 (first report, kept until cleared), `updated_at` (latest agent report, including
 an `only_if_waiting` call that changed nothing), `task_started_at` (the prompt
-that started the current task), `task_finished_at` (`done`/`failed` only),
+that started the current task; an alert's optional `turn_started_at` fills it
+only when the service did not see the start and it falls after the previous task ended), `task_finished_at` (`done`/`failed` only),
 `waiting_since` (`input_needed*` only), `dismissed_at` (cleared by the next
 agent update), `last_request_at` (any request touching the row),
 `user_action_at` (Dismiss, Stop sound, or Focus from the app or web), and

@@ -38,8 +38,9 @@ Inherit the root rules, including **two-space Rust indentation**.
   `tool_use_id` (`waiting_tools`). Every replacement forgets the previous waiting
   tool.
 - `times` is set here from `Utc::now()`, never from requests (`next_times` in
-  `notification_handlers.rs`). Unknown moments stay `None`; do not backfill a
-  task start. Dismissals set `dismissed_at` but not `updated_at`. User actions
+  `notification_handlers.rs`). Unknown moments stay `None`; the only backfill is
+  an alert's `turn_started_at`, which must stay rejected when in the future or
+  not after the session's previous `task_finished_at`. Dismissals set `dismissed_at` but not `updated_at`. User actions
   (Dismiss, Stop sound, `/focused`) set `user_action_at`; `user_input_at` is set
   by every move to `working`. `/focused` must never change state, order, or audio.
 - Sound controls are global. `/sound/stop` acknowledges every alerting row; a

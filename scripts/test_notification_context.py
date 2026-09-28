@@ -80,6 +80,32 @@ class ContextTests(unittest.TestCase):
         )
         self.assertEqual(context.transcript_context(path), {'current_ask': 'Rebuild the app.'})
 
+    def test_claude_code_turn_starts_at_the_prompt_after_the_last_finished_turn(self):
+        prompt = lambda stamp, text: {'type': 'user', 'timestamp': stamp, 'message': {'content': text}}
+        ended = lambda stamp: [{'type': 'system', 'subtype': 'stop_hook_summary', 'timestamp': stamp},
+                               {'type': 'system', 'subtype': 'turn_duration', 'durationMs': 5000, 'timestamp': stamp}]
+        earlier = [prompt('2026-09-27T10:00:00.000Z', 'First task'), *ended('2026-09-27T10:05:00.000Z')]
+        current = self.transcript(*earlier, prompt('2026-09-27T11:00:00.123Z', 'Second task'),
+                                  {'type': 'user', 'timestamp': '2026-09-27T11:00:05Z', 'message': {'content': [{'type': 'tool_result', 'content': 'ok'}]}},
+                                  {'type': 'user', 'isMeta': True, 'timestamp': '2026-09-27T11:00:06Z', 'message': {'content': 'Skill text'}})
+        self.assertEqual(context.turn_started_at(current), '2026-09-27T11:00:00.123Z')
+        # A turn with no prompt of its own (a background task finishing) must not
+        # borrow the earlier, finished turn's prompt.
+        self.assertIsNone(context.turn_started_at(self.transcript(*earlier)))
+
+    def test_codex_turn_starts_at_its_task_started_event(self):
+        event = lambda stamp, kind: {'timestamp': stamp, 'type': 'event_msg', 'payload': {'type': kind}}
+        path = self.transcript(event('2026-09-27T09:00:00Z', 'task_started'), event('2026-09-27T09:10:00Z', 'task_complete'),
+                               event('2026-09-27T12:30:00.5+02:00', 'task_started'), self.message('user', 'steer mid-turn'))
+        self.assertEqual(context.turn_started_at(path), '2026-09-27T10:30:00.500Z')
+
+    def test_turn_start_is_absent_for_missing_or_malformed_timestamps(self):
+        self.assertIsNone(context.turn_started_at(None))
+        self.assertIsNone(context.turn_started_at(str(self.root / 'missing.jsonl')))
+        for stamp in ('yesterday', '2026-09-27T10:00:00', None, 5):
+            path = self.transcript({'type': 'user', 'timestamp': stamp, 'message': {'content': 'Task'}})
+            self.assertIsNone(context.turn_started_at(path), stamp)
+
     def test_explicit_goal_can_update_the_arc(self):
         path = self.transcript(self.message('user', 'Fix login.'),
             {'type': 'response_item', 'payload': {'type': 'function_call', 'name': 'functions.update_plan', 'arguments': json.dumps({'explanation': 'Repair the login flow.'})}},

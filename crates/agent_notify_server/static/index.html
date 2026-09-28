@@ -110,8 +110,8 @@
     <h3>Report status</h3>
     <div class="table-wrap"><table>
       <tr><th>Endpoint</th><th>Body</th><th>Effect</th></tr>
-      <tr><td><code>POST /awaiting_user_input</code></td><td><code>{title, message, session_id?, context?, origin?, agent?, tool_use_id?}</code></td><td>Row becomes <code>input_needed</code></td></tr>
-      <tr><td><code>POST /all_tasks_finished</code></td><td><code>{title, message, session_id?, context?, origin?, agent?}</code></td><td>Row becomes <code>done</code></td></tr>
+      <tr><td><code>POST /awaiting_user_input</code></td><td><code>{title, message, session_id?, context?, origin?, agent?, tool_use_id?, turn_started_at?}</code></td><td>Row becomes <code>input_needed</code></td></tr>
+      <tr><td><code>POST /all_tasks_finished</code></td><td><code>{title, message, session_id?, context?, origin?, agent?, turn_started_at?}</code></td><td>Row becomes <code>done</code></td></tr>
       <tr><td><code>POST /task_failed</code></td><td>same</td><td>Row becomes <code>failed</code></td></tr>
       <tr><td><code>POST /working</code></td><td><code>{session_id, title?, message?, context?, origin?, agent?, only_if_waiting?, tool_use_id?}</code></td><td>Row becomes <code>working</code>; returns <code>{updated, notification?}</code>. <code>only_if_waiting</code> only resumes a waiting row.</td></tr>
     </table></div>
@@ -128,7 +128,8 @@
       only), <code>dismissed_at</code> (cleared by the next agent update), <code>last_request_at</code>
       (any request touching the row), <code>user_action_at</code> (Dismiss, Stop sound, or Focus here or in
       the app), and <code>user_input_at</code> (a prompt or answer in the terminal, from the hooks).
-      Requests cannot set them. Hover a task's timing line for all of them.</p>
+      Requests cannot set them, except that an alert's optional <code>turn_started_at</code> (from the agent's
+      transcript) fills an unseen task start when it falls after the previous task ended. Hover a task's timing line for all of them.</p>
 
     <h3>Act on tasks</h3>
     <div class="table-wrap"><table>

@@ -16,7 +16,7 @@ import urllib.error
 import urllib.request
 
 from notification_origin import capture_origin
-from notification_context import capture_context
+from notification_context import capture_context, turn_started_at
 
 ROOT = Path(__file__).resolve().parents[1]
 # Rolling record of hook decisions for after-the-fact debugging ("why did this
@@ -293,6 +293,15 @@ def post(event, endpoint, payload):
     except Exception:
         # Optional context must never suppress an alert.
         pass
+    if endpoint != "/working":
+        # The service observes starts through UserPromptSubmit; this only fills
+        # gaps (a restart or a skipped busy update) and never blocks the alert.
+        try:
+            started = turn_started_at(event.get("transcript_path"))
+            if started:
+                payload["turn_started_at"] = started
+        except Exception:
+            pass
     try:
         origin = capture_origin(session_id=payload.get("session_id") if agent == "codex" else None)
         if origin is not None:

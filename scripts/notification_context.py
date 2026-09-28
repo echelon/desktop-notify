@@ -1,4 +1,5 @@
 """Best-effort local session context. Never execute repository code or call a model."""
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -108,14 +109,14 @@ def user_request(value):
     return text(value, LIMITS["current_ask"])
 
 
-def transcript_context(path):
-    """Tolerate changing transcript formats; a missing/unreadable tail is optional."""
+def transcript_tail(path):
+    """The transcript's last records as raw lines; empty when unavailable."""
     if not isinstance(path, str) or not path:
-        return {}
+        return []
     try:
         file = Path(path)
         if not file.is_file():
-            return {}
+            return []
         with file.open("rb") as stream:
             size = os.fstat(stream.fileno()).st_size
             stream.seek(max(0, size - MAX_TRANSCRIPT_BYTES))
@@ -123,18 +124,63 @@ def transcript_context(path):
         if size > MAX_TRANSCRIPT_BYTES:
             data = data.partition(b"\n")[2]  # discard the partial first record
     except OSError:
-        return {}
+        return []
+    return data.splitlines()
+
+
+def claude_prompt(record):
+    """The typed prompt in a Claude Code user record, or None. Tool results are
+    lists containing tool_result blocks and are not user requests."""
+    if record.get("type") != "user" or record.get("isMeta"):
+        return None
+    content = record.get("message", {}).get("content")
+    if isinstance(content, list) and all(isinstance(c, dict) and c.get("type") == "text" for c in content):
+        content = "\n".join(c.get("text", "") for c in content)
+    return user_request(content)
+
+
+def turn_started_at(path):
+    """When the agent's current turn began, from its own transcript records, or
+    None when that cannot be told. Codex writes a task_started event for every
+    turn, including ones without a new prompt. Claude Code has no start record:
+    its turn begins at the typed prompt, and it writes stop_hook_summary and
+    turn_duration once a turn ends, so a prompt older than the latest end marker
+    belongs to a finished turn (for example before a background-task turn) and
+    is not reported. Returning None never over-reports; the service then leaves
+    the start unknown."""
+    started = None
+    for line in transcript_tail(path):
+        try:
+            record = json.loads(line)
+            stamp = record.get("timestamp")
+            payload = record.get("payload")
+            if record.get("type") == "event_msg" and isinstance(payload, dict) and payload.get("type") == "task_started":
+                started = stamp
+            elif record.get("type") == "system" and record.get("subtype") in ("stop_hook_summary", "turn_duration"):
+                started = None
+            elif claude_prompt(record):
+                started = stamp
+        except (ValueError, AttributeError, TypeError):
+            continue
+    try:
+        # Normalize, and reject anything that is not a timezone-aware timestamp.
+        moment = datetime.fromisoformat(started.replace("Z", "+00:00"))
+        if moment.tzinfo is None:
+            return None
+        return moment.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    except (AttributeError, ValueError):
+        return None
+
+
+def transcript_context(path):
+    """Tolerate changing transcript formats; a missing/unreadable tail is optional."""
     result = {}
-    for line in data.splitlines():
+    for line in transcript_tail(path):
         try:
             record = json.loads(line)
             if record.get("type") == "user" and not record.get("isMeta"):
-                # Claude Code: prompts are string content; tool results are lists
-                # containing tool_result blocks and are not user requests.
-                content = record.get("message", {}).get("content")
-                if isinstance(content, list) and all(isinstance(c, dict) and c.get("type") == "text" for c in content):
-                    content = "\n".join(c.get("text", "") for c in content)
-                request = user_request(content)
+                # Claude Code: prompts are string content or text blocks.
+                request = claude_prompt(record)
                 if request:
                     result = {"current_ask": request}
                 continue

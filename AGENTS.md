@@ -91,8 +91,8 @@ A missing configured sound returns 503.
 
 | Endpoint | Body | Effect |
 | --- | --- | --- |
-| `POST /awaiting_user_input` | `{title, message, session_id?, context?, origin?, agent?, tool_use_id?}` | Row becomes `input_needed`. `tool_use_id` names the tool call it waits on. |
-| `POST /all_tasks_finished` | `{title, message, session_id?, context?, origin?, agent?}` | Row becomes `done`. |
+| `POST /awaiting_user_input` | `{title, message, session_id?, context?, origin?, agent?, tool_use_id?, turn_started_at?}` | Row becomes `input_needed`. `tool_use_id` names the tool call it waits on. |
+| `POST /all_tasks_finished` | `{title, message, session_id?, context?, origin?, agent?, turn_started_at?}` | Row becomes `done`. |
 | `POST /task_failed` | same as above | Row becomes `failed`. |
 | `POST /working` | `{session_id, title?, message?, context?, origin?, agent?, only_if_waiting?, tool_use_id?}` | Row becomes `working` and returns `{updated, notification?}`. With `only_if_waiting`, it only resumes an `input_needed*` row waiting on the same `tool_use_id` (or either is unknown), and never creates a row or revives a finished one. Missing title/message keep the row's text. |
 
@@ -108,14 +108,15 @@ sessions keep `context`, `origin`, and `agent` when an update omits them.
 
 `times` holds service-assigned timestamps (chrono `DateTime<Utc>`, RFC 3339 on
 the wire). Every field is optional and omitted when the service did not observe
-that moment; requests cannot set them. Only named sessions carry them across
+that moment; requests cannot set them (an alert's `turn_started_at` is only a
+guarded fallback for an unseen task start). Only named sessions carry them across
 replacements; the unassigned row starts fresh each time.
 
 | Field | Set | Cleared or kept |
 | --- | --- | --- |
 | `tracked_since` | First report for the session | Kept until the row is cleared |
 | `updated_at` | Every agent report, including an `only_if_waiting` call that changed nothing | Dismissals do not touch it |
-| `task_started_at` | `/working` without `only_if_waiting`, unless the row is already `working` (a queued prompt joins the turn) | Kept through `input_needed*`, resume, and `done`/`failed`; unknown (`None`) when the start was not seen |
+| `task_started_at` | `/working` without `only_if_waiting`, unless the row is already `working` (a queued prompt joins the turn). If still unknown, an alert's `turn_started_at` fills it, unless that is in the future or not after the session's previous `task_finished_at` | Kept through `input_needed*`, resume, and `done`/`failed`; otherwise `None` |
 | `task_finished_at` | `done`/`failed` | `None` for every other state |
 | `waiting_since` | Entering `input_needed` (kept if already waiting) | `None` outside `input_needed*` |
 | `dismissed_at` | Dismiss or Stop sound | Any agent update |
@@ -243,8 +244,11 @@ Principles:
   text in `transcript_path`. `context` comes from `notification_context.py`: cwd,
   repo metadata from manifests or README, and `current_ask` from the latest real
   prompt in either transcript format. `origin` comes from `notification_origin.py`
-  (see Focus). Context and origin are best-effort; their failure never
-  suppresses the alert.
+  (see Focus). Alerts add `turn_started_at` from `notification_context.turn_started_at`:
+  Codex's latest `task_started` event, or Claude Code's latest typed prompt when
+  no `stop_hook_summary`/`turn_duration` marker follows it (a turn without its
+  own prompt reports nothing rather than an earlier turn's start). Context,
+  origin, and turn start are best-effort; their failure never suppresses the alert.
 
 ### Setup
 

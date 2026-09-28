@@ -20,6 +20,9 @@ pub struct NotificationRequest {
   /// The tool call a question/permission request is waiting on, when known.
   tool_use_id: Option<String>,
   agent: Option<notify_types::Agent>,
+  /// When the agent's transcript says the current turn began. Only used when
+  /// the service did not see the turn start itself (see `next_times`).
+  turn_started_at: Option<DateTime<Utc>>,
 }
 
 pub async fn awaiting_user_input(
@@ -121,11 +124,16 @@ fn fresh_id() -> String {
 /// earlier row; unassigned rows come from unrelated callers and start fresh.
 /// `new_prompt` marks a submitted prompt, which starts a task unless one is
 /// already running (a prompt queued mid-turn joins that turn). Moments the
-/// service did not observe stay `None` instead of being guessed.
+/// service did not observe stay `None` instead of being guessed, except that
+/// an agent-reported `turn_started` fills an unknown start (after a service
+/// restart, or when the busy update was skipped). It is ignored if it lies in
+/// the future or before this session's previous task ended, so a stale report
+/// can never stretch a task back over an earlier one.
 fn next_times(
   previous: Option<&Notification>,
   state: TaskState,
   new_prompt: bool,
+  turn_started: Option<DateTime<Utc>>,
   now: DateTime<Utc>,
 ) -> TaskTimes {
   // Working and waiting rows belong to a task that has not finished yet.
@@ -139,6 +147,13 @@ fn next_times(
   } else {
     started
   };
+  let previous_end = previous.and_then(|p| p.times.task_finished_at);
+  let task_started_at = task_started_at
+    .or(turn_started.filter(|start| {
+      *start <= now + TimeDelta::seconds(5) && previous_end.is_none_or(|end| *start > end)
+    }))
+    // Tolerate a few seconds of clock skew between the agent and the service.
+    .map(|start| start.min(now));
   let kept =
     |field: fn(&TaskTimes) -> Option<DateTime<Utc>>| previous.and_then(|p| field(&p.times));
   let waiting_since = (state == TaskState::InputNeeded).then(|| {
@@ -183,6 +198,7 @@ fn replace_row(
   context: Option<notify_types::SessionContext>,
   waiting_on: Option<String>,
   new_prompt: bool,
+  turn_started: Option<DateTime<Utc>>,
 ) -> Notification {
   let now = Utc::now();
   if let Some(session) = &notification.session_id {
@@ -199,7 +215,7 @@ fn replace_row(
   let named = previous
     .as_ref()
     .filter(|_| notification.session_id.is_some());
-  notification.times = next_times(named, notification.state, new_prompt, now);
+  notification.times = next_times(named, notification.state, new_prompt, turn_started, now);
   if let Some(previous) = previous {
     log::info!(
       "session {:?}: {:?} -> {:?}",
@@ -267,6 +283,7 @@ fn notify(state: &ServerState, request: NotificationRequest, task: TaskState) ->
     request.context,
     waiting_on,
     false,
+    request.turn_started_at,
   );
   reconcile_audio(state, &mut current);
   HttpResponse::Ok().json(notification)
@@ -381,6 +398,7 @@ pub async fn working(
     request.context,
     None,
     !request.only_if_waiting,
+    None,
   );
   reconcile_audio(&state, &mut current);
   HttpResponse::Ok().json(WorkingResponse {

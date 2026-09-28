@@ -199,6 +199,21 @@ class HookTests(unittest.TestCase):
                 hook.main()
                 self.assertEqual(post.call_args.args[1]["context"], self.context.return_value)
 
+    def test_alerts_report_the_transcript_turn_start_and_busy_updates_do_not(self):
+        with patch.object(hook, "turn_started_at", return_value="2026-09-27T11:00:00.123Z") as start:
+            for name in ("Stop", "PermissionRequest", "StopFailure"):
+                posts, _ = self.run_hook({"hook_event_name": name, "session_id": "s", "transcript_path": "/t.jsonl"})
+                self.assertEqual(posts[0][1]["turn_started_at"], "2026-09-27T11:00:00.123Z", name)
+            start.assert_called_with("/t.jsonl")
+            start.reset_mock()
+            with patch.object(hook, "running", return_value=True):
+                posts, _ = self.run_hook({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "Go"})
+            self.assertNotIn("turn_started_at", posts[0][1])
+            start.assert_not_called()
+        with patch.object(hook, "turn_started_at", side_effect=OSError("unreadable")):
+            posts, _ = self.run_hook({"hook_event_name": "Stop", "session_id": "s"})
+        self.assertNotIn("turn_started_at", posts[0][1])
+
     def test_context_failure_cannot_suppress_alert_or_origin(self):
         self.context.side_effect = OSError("Transcript unavailable")
         self.origin.return_value = {"terminal_app": "ghostty"}
