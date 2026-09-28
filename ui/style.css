@@ -14,6 +14,25 @@ header { display: flex; align-items: center; justify-content: space-between; pad
 .count:empty { display: none; }
 .icon-button { background: none; border: 0; border-radius: 5px; width: 27px; height: 28px; color: var(--muted); font-size: 23px; line-height: 1; flex-shrink: 0; }
 .icon-button:hover:not(:disabled) { background: var(--surface); color: var(--fg); }
+/* Filter and sort: one slim row that wraps only when the window is narrow. */
+.view-controls { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 10px; padding: 5px 12px 5px 14px; border-bottom: 1px solid var(--border); font-size: 10.5px; user-select: none; -webkit-user-select: none; }
+.filters { display: flex; flex-wrap: wrap; gap: 2px; }
+.filter { padding: 2px 7px; border: 0; border-radius: 10px; background: none; color: var(--muted); line-height: 1.5; }
+.filter::after { content: attr(data-count); margin-left: 4px; color: var(--muted); opacity: .75; font-variant-numeric: tabular-nums; }
+.filter[data-count=""]::after { content: none; }
+.filter:hover { color: var(--fg); }
+.filter[aria-pressed="true"] { background: var(--surface); color: var(--fg); }
+/* Draw the eye to unseen alerts even while another filter is chosen. */
+.filter[data-filter="attention"].has-items { color: #f4bc70; }
+.filter[data-filter="attention"].has-items::after { color: #f4bc70; opacity: 1; }
+.sort { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+.sort select { appearance: none; -webkit-appearance: none; padding: 2px 6px; border: 0; border-radius: 5px; background: none; color: var(--muted); font: inherit; cursor: pointer; }
+.sort select:hover, .sort select:focus-visible { background: var(--surface); color: var(--fg); }
+.sort select:focus-visible, .filter:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sort-direction { padding: 1px 5px; border: 0; border-radius: 5px; background: none; color: var(--muted); font-size: 11px; }
+.sort-direction:hover { background: var(--surface); color: var(--fg); }
+.filtered-empty { margin: 18px 0; color: var(--muted); font-size: 12px; text-align: center; }
+.filtered-empty .footer-link { margin: 0; font-size: 12px; }
 main { flex: 1; min-height: 0; overflow: auto; padding: 5px 16px; }
 .notification { padding: 14px 0; border-bottom: 1px solid var(--border); }
 .notification:last-child { border-bottom: 0; }

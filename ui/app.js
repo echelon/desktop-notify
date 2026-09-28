@@ -220,6 +220,53 @@ function renderTimings() {
   }
 }
 
+/* Filter and sort are presentation only: they never change a task or reach the
+   service, reset to All on each launch, and leave the tray count untouched.
+   The direction flips newest/oldest within the chosen order. */
+const FILTERS = {
+  all: () => true,
+  attention: (state) => STATES[state].alerting,
+  asking: (state) => state.startsWith('input_needed'),
+  working: (state) => state === 'working',
+  done: (state) => state.startsWith('done') || state.startsWith('failed'),
+};
+const SORTS = {
+  attention: { rank: (state) => (STATES[state].alerting ? 0 : 1), time: 'updated_at' },
+  working: { rank: (state) => (state === 'working' ? 0 : 1), time: 'updated_at' },
+  updated: { rank: () => 0, time: 'updated_at' },
+  added: { rank: () => 0, time: 'tracked_since' },
+};
+const FILTER_EMPTY = { all: 'No tasks.', attention: 'Nothing needs you.', working: 'No agent is working.', asking: 'No agent is asking.', done: 'No finished tasks.' };
+const view = { filter: 'all', sort: 'attention', newestFirst: true };
+
+function visibleTasks(alerts) {
+  const sort = SORTS[view.sort];
+  const direction = view.newestFirst ? 1 : -1;
+  // Rows without the timestamp (from older services) go last. The service lists
+  // rows newest update first, and that order breaks ties.
+  return alerts.map((alert, index) => ({ alert, index, state: taskState(alert), time: parseTime(alert.times?.[sort.time]) }))
+    .filter(({ state }) => FILTERS[view.filter](state))
+    .sort((a, b) => sort.rank(a.state) - sort.rank(b.state)
+      || Number.isNaN(a.time) - Number.isNaN(b.time)
+      || direction * ((b.time - a.time) || (a.index - b.index)))
+    .map(({ alert }) => alert);
+}
+
+function renderView(alerts) {
+  byId('view-controls').hidden = alerts.length === 0;
+  for (const key of Object.keys(FILTERS)) {
+    const chip = byId(`filter-${key}`);
+    const count = key === 'all' ? alerts.length : alerts.filter((alert) => FILTERS[key](taskState(alert))).length;
+    chip.dataset.count = count ? String(count) : '';
+    chip.setAttribute('aria-pressed', String(view.filter === key));
+    chip.classList.toggle('has-items', count > 0);
+  }
+  byId('sort-key').value = view.sort;
+  byId('sort-direction').textContent = view.newestFirst ? '↓' : '↑';
+  byId('sort-direction').title = view.newestFirst ? 'Newest first (click for oldest first)' : 'Oldest first (click for newest first)';
+  byId('sort-direction').setAttribute('aria-label', view.newestFirst ? 'Newest first' : 'Oldest first');
+}
+
 function render(next) {
   snapshot = next;
   const alerts = next.notifications;
@@ -239,7 +286,7 @@ function render(next) {
   byId('connection').classList.toggle('online', next.connected);
   byId('error').hidden = !next.error;
   byId('error').textContent = next.error || '';
-  alerts.forEach((alert, index) => {
+  alerts.forEach((alert) => {
     if (!rows.has(alert.id)) rows.set(alert.id, createRow(alert));
     const refs = rows.get(alert.id);
     const state = taskState(alert);
@@ -272,10 +319,21 @@ function render(next) {
     refs.status.hidden = !statuses.has(alert.id);
     refs.status.textContent = statuses.get(alert.id) || '';
     renderTiming(refs, alert);
-    const list = byId('notifications');
-    // Preserve open details, selection and keyboard focus on unchanged updates.
-    if (list.children[index] !== refs.row) list.insertBefore(refs.row, list.children[index] || null);
   });
+  // Filtered-out rows leave the list but keep their nodes, so open details and
+  // per-row status survive switching back.
+  const visible = visibleTasks(alerts);
+  const shown = new Set(visible.map((alert) => alert.id));
+  for (const [id, refs] of rows) if (!shown.has(id)) refs.row.remove();
+  const list = byId('notifications');
+  visible.forEach((alert, index) => {
+    const { row } = rows.get(alert.id);
+    // Preserve open details, selection and keyboard focus on unchanged updates.
+    if (list.children[index] !== row) list.insertBefore(row, list.children[index] || null);
+  });
+  renderView(alerts);
+  byId('filtered-empty').hidden = alerts.length === 0 || visible.length > 0;
+  byId('filtered-empty-text').textContent = FILTER_EMPTY[view.filter];
   renderSound();
 }
 
@@ -352,6 +410,11 @@ byId('api').addEventListener('click', () => invoke('open_web_interface').catch((
 // Refreshes only the countdown and timing text; resuming is decided by the service.
 setInterval(() => { renderSound(); renderTimings(); }, 1000);
 byId('hide').addEventListener('click', () => invoke('hide_window'));
+const setView = (change) => { Object.assign(view, change); render(snapshot); };
+for (const key of Object.keys(FILTERS)) byId(`filter-${key}`).addEventListener('click', () => setView({ filter: key }));
+byId('filtered-reset').addEventListener('click', () => setView({ filter: 'all' }));
+byId('sort-key').addEventListener('change', (event) => setView({ sort: SORTS[event.target.value] ? event.target.value : 'attention' }));
+byId('sort-direction').addEventListener('click', () => setView({ newestFirst: !view.newestFirst }));
 byId('resize').addEventListener('mousedown', (e) => { if (e.button === 0) getCurrentWindow().startResizeDragging('SouthEast'); });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' || (e.metaKey && e.key === 'w')) { e.preventDefault(); invoke('hide_window'); }

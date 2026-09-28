@@ -295,6 +295,11 @@ its task start.
   "Waiting for 2m 5s · task running for 10m 0s", "Finished 2 minutes ago · ran
   for 4m 30s"), refreshed every second; its tooltip lists the exact timestamps.
   A working row whose agent has been silent for a minute adds "last update …".
+- **Filter and sort** (tray app only, view-only): a slim bar under the header
+  with chips All · Needs you (alerting) · Asking (`input_needed*`) · Working ·
+  Done (`done*`/`failed*`), each with a count, and a sort menu: Needs you first
+  (default), Working first, Last update, or First seen, with ↓/↑ for newest or
+  oldest first within that order. Opens on All every launch.
 - **Row buttons:** **Focus** returns to the agent's terminal and changes nothing
   else (afterwards it only reports the time through `POST /focused/{id}`). **Dismiss** (alerting rows only) acknowledges that row; others keep
   alerting. **×** (Clear) removes the row.

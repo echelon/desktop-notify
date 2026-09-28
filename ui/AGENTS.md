@@ -27,6 +27,11 @@ Use two-space JavaScript indentation and follow the existing CSS style/tokens.
   alerting rows and acknowledges that row alone. Stop sound and Snooze are global
   controls in the bar above the footer; they retain every row. Clear (×) removes
   only its row. Hide and keyboard shortcuts only hide the window.
+- Filter chips (All, Needs you, Asking, Working, Done, with counts) and the sort
+  menu (Needs you first, Working first, Last update, First seen, plus a
+  newest/oldest toggle) are view-only: never persist them, call the service, or
+  change the tray count. They reset to All and Needs you first, newest first on
+  launch. Filtered-out rows keep their nodes so details and statuses survive.
 - Label rows by `state`; quiet rows are dimmed and `working` shows a pulse, which
   honors reduced motion.
 - Stay self-documenting: each action's tooltip names its REST call, and the

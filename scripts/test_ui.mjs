@@ -299,3 +299,76 @@ test('timing text follows a session to its replacement row', async () => {
   assert.equal(page.row('a'), undefined);
   assert.match(page.row('b').find('timing').textContent, /^Finished less than 1 minute ago · ran for 1m 1s$/);
 });
+
+const at = (minutes) => new Date(Date.UTC(2026, 8, 27, 12, minutes)).toISOString();
+const viewTasks = () => [
+  notification('ask', { state: 'input_needed', times: { updated_at: at(10), tracked_since: at(1) } }),
+  notification('ignored', { state: 'input_needed_ignored', times: { updated_at: at(40), tracked_since: at(4) } }),
+  notification('work', { state: 'working', times: { updated_at: at(50), tracked_since: at(2) } }),
+  notification('done', { state: 'done', times: { updated_at: at(30), tracked_since: at(5) } }),
+  notification('seen', { state: 'done_acknowledged', times: { updated_at: at(20), tracked_since: at(3) } }),
+  notification('fail', { state: 'failed_acknowledged', times: { updated_at: at(5) } }),
+];
+const order = (page) => page.element('notifications').children.map((row) => row.dataset.id);
+
+test('filters show matching tasks with counts, default to All, and never call the service', async () => {
+  const page = await ui(viewTasks());
+  const calls = page.calls.length;
+  assert.equal(page.element('filter-all')['aria-pressed'], 'true');
+  const counts = Object.fromEntries(['all', 'attention', 'working', 'asking', 'done'].map((key) => [key, page.element(`filter-${key}`).dataset.count]));
+  assert.deepEqual(counts, { all: '6', attention: '2', working: '1', asking: '2', done: '3' });
+  const show = (key) => { page.element(`filter-${key}`).handlers.click(); return order(page).sort(); };
+  assert.deepEqual(show('attention'), ['ask', 'done']);
+  assert.deepEqual(show('working'), ['work']);
+  assert.deepEqual(show('asking'), ['ask', 'ignored']);
+  assert.deepEqual(show('done'), ['done', 'fail', 'seen']);
+  assert.equal(page.element('filter-done')['aria-pressed'], 'true');
+  assert.equal(page.element('filter-all')['aria-pressed'], 'false');
+  assert.equal(page.calls.length, calls);
+  // Row nodes (and their open details) survive being filtered out.
+  show('all');
+  const work = page.row('work');
+  work.find('details').open = true;
+  show('done');
+  assert.equal(page.row('work'), undefined);
+  show('all');
+  assert.equal(page.row('work'), work);
+  assert.equal(work.find('details').open, true);
+});
+
+test('an empty filter explains itself and offers a way back to All', async () => {
+  const page = await ui([notification('a', { state: 'done' })]);
+  assert.equal(page.element('filtered-empty').hidden, true);
+  page.element('filter-working').handlers.click();
+  assert.equal(page.element('filtered-empty').hidden, false);
+  assert.equal(page.element('filtered-empty-text').textContent, 'No agent is working.');
+  page.element('filtered-reset').handlers.click();
+  assert.equal(page.element('filtered-empty').hidden, true);
+  assert.deepEqual(order(page), ['a']);
+  page.update([]);
+  assert.equal(page.element('filtered-empty').hidden, true);
+  assert.equal(page.element('view-controls').hidden, true);
+});
+
+test('sorts group attention or work first and flip newest/oldest within the order', async () => {
+  const page = await ui(viewTasks());
+  const sort = (value) => page.element('sort-key').handlers.change({ target: { value } });
+  // Default: needs you first, then newest update first.
+  assert.deepEqual(order(page), ['done', 'ask', 'work', 'ignored', 'seen', 'fail']);
+  page.element('sort-direction').handlers.click();
+  assert.deepEqual(order(page), ['ask', 'done', 'fail', 'seen', 'ignored', 'work']);
+  assert.equal(page.element('sort-direction').textContent, '↑');
+  page.element('sort-direction').handlers.click();
+  sort('working');
+  assert.deepEqual(order(page), ['work', 'ignored', 'done', 'seen', 'ask', 'fail']);
+  sort('updated');
+  assert.deepEqual(order(page), ['work', 'ignored', 'done', 'seen', 'ask', 'fail']);
+  // First seen; a row without the timestamp goes last in either direction.
+  sort('added');
+  assert.deepEqual(order(page), ['done', 'ignored', 'seen', 'work', 'ask', 'fail']);
+  page.element('sort-direction').handlers.click();
+  assert.deepEqual(order(page), ['ask', 'work', 'seen', 'ignored', 'done', 'fail']);
+  // Sorting combines with a filter.
+  page.element('filter-asking').handlers.click();
+  assert.deepEqual(order(page), ['ask', 'ignored']);
+});

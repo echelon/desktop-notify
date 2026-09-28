@@ -12,7 +12,26 @@
       <span class="brand" data-tauri-drag-region><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg> Notifications <span id="count" class="count"></span></span>
       <button id="hide" class="icon-button" title="Hide to tray (Esc)" aria-label="Hide to tray">−</button>
     </header>
+    <nav id="view-controls" class="view-controls" aria-label="Filter and sort tasks" hidden>
+      <div class="filters" role="group" aria-label="Show">
+        <button id="filter-all" class="filter" type="button" data-filter="all" title="Every task">All</button>
+        <button id="filter-attention" class="filter" type="button" data-filter="attention" title="Questions, finished and failed tasks you have not dismissed">Needs you</button>
+        <button id="filter-asking" class="filter" type="button" data-filter="asking" title="Questions and permission requests, dismissed or not">Asking</button>
+        <button id="filter-working" class="filter" type="button" data-filter="working" title="Agents busy on a task">Working</button>
+        <button id="filter-done" class="filter" type="button" data-filter="done" title="Finished or failed tasks, seen or not">Done</button>
+      </div>
+      <div class="sort">
+        <select id="sort-key" aria-label="Sort tasks">
+          <option value="attention">Needs you first</option>
+          <option value="working">Working first</option>
+          <option value="updated">Last update</option>
+          <option value="added">First seen</option>
+        </select>
+        <button id="sort-direction" class="sort-direction" type="button"></button>
+      </div>
+    </nav>
     <main>
+      <p id="filtered-empty" class="filtered-empty" hidden><span id="filtered-empty-text"></span> <button id="filtered-reset" class="footer-link" type="button">Show all</button></p>
       <section id="notifications" aria-label="Agent statuses" aria-live="polite" hidden></section>
       <section id="empty" class="empty">
         <div class="empty-icon">✓</div>
