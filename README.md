@@ -235,7 +235,7 @@ frontend is plain HTML/CSS/JavaScript bundled by Tauri; no Node build step is ne
   own **Focus**, **Dismiss** (alerting rows only), and **×** buttons. **Dismiss**
   acknowledges just that task; other tasks keep alerting. **×** removes the row.
   Available project/task context is compact; expand **Details** (or **View
-  message**) for the full text. Only alerting rows open the window or mark the tray.
+  message**) for the full text. Only alerting rows open the window or animate the tray bell.
 - Sound is global. The bar above the status line has **Stop sound** (`POST
   /sound/stop`, retaining every row), **Snooze 1 min**, and **Snooze 5 min**
   (`POST /sound/snooze`), with a countdown while snoozed. The footer's **Web API ↗**
@@ -245,7 +245,10 @@ frontend is plain HTML/CSS/JavaScript bundled by Tauri; no Node build step is ne
 - **Hide to tray**, Escape, closing, or minimizing hides the window without
   dismissing the alert. Its sound keeps playing until stopped, snoozed, or cleared.
 - Clicking the bell tray icon recalls the status list. Right-click opens the
-  Show Notifications / Hide to Tray / Quit menu. A dot marks an active alert.
+  Show Notifications / Hide to Tray / Quit menu. During an active alert,
+  the bell turns gold, gently tilts left and right, and ripples sound waves until the
+  alert is stopped, snoozed, or cleared. The wider animated icon nudges its menu-bar
+  neighbors while it runs.
 - When idle, the app stays in the tray. Recalling it shows **All caught up**.
 - The app stays alive across service restarts and reconnects automatically. A
   hidden alert stays hidden until recalled or replaced with a new alert.

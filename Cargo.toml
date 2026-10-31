@@ -21,3 +21,20 @@ serde_derive = "1.0.228"
 serde_yaml = "0.9.34"
 tokio = { version = "1.50.0", features = ["macros"] }
 toml = "0.9.12"
+
+# `scripts/build.py` bundles the debug profile, and the tray bell's animation
+# PNG-encodes its icon on every frame. Unoptimized, that costs about 20% of a core.
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.crc32fast]
+opt-level = 3
+[profile.dev.package.simd-adler32]
+opt-level = 3
+[profile.dev.package.adler2]
+opt-level = 3

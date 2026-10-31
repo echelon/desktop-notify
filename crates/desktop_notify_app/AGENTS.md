@@ -31,7 +31,7 @@ frontend lives in `../../ui/` and has its own rules.
 - Closing/minimizing and Escape hide to tray. Only Quit exits. Focus leaves the
   notification window available for later Stop sound/Clear actions.
 - Preserve the macOS accessory app, always-on-top/all-Spaces behavior, full-screen
-  auxiliary behavior, tray recall, and active-row indicator.
+  auxiliary behavior, tray recall, and the tray bell's alert animation.
 - Poll `/notifications` (currently every 400 ms), retain the last snapshot on
   connection failure, and reconnect without exiting or discarding rows. Report
   `/desktop/status` heartbeats, visibility, PID, and displayed IDs.
