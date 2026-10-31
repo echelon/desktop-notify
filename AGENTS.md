@@ -69,8 +69,8 @@ README and `crates/agent_notify_server/static/index.html` describe the API.
 ## Task states
 
 Every row has one `TaskState` (`crates/notify_types`, serialized snake_case).
-Only **alerting** states feed the sound loop, open the window, and set the tray
-dot. The row's `state` field is its only status.
+Only **alerting** states feed the sound loop, open the window, and animate the
+tray bell. The row's `state` field is its only status.
 
 | State | Alerting | Entered by | Dismiss moves it to |
 | --- | --- | --- | --- |
@@ -318,8 +318,10 @@ its task start.
 - **Window and tray:** a frameless, always-on-top window on every Space and over
   full-screen apps. Only new alerting rows open it. Clearing the last row hides
   it. Hide, Escape, and closing send it to the tray, which recalls it. The tray
-  dot and tooltip count tasks needing attention. The app reconnects after service
-  restarts and keeps its last snapshot while offline.
+  tooltip counts tasks needing attention, and the bell turns gold, gently tilts
+  left and right, and ripples sound waves while any row is alerting, unless
+  snoozed or offline. The app reconnects after service restarts and keeps its
+  last snapshot while offline.
 - **Task backup:** the service writes rows, the snooze deadline, and waiting
   tools as TOML to `/tmp/desktop-notify/state-<port>.toml` (directory 0700,
   file 0600, atomic rename) every 5 minutes when changed and on SIGTERM/SIGINT,

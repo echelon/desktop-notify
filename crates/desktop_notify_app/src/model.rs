@@ -36,9 +36,70 @@ pub fn visibility_change(previous: &[&str], next: &[(&str, bool)]) -> Visibility
   }
 }
 
+/// The tray bell swings while the alert sound should be playing: some row is
+/// alerting, and it is neither snoozed nor unreachable. Offline, the retained
+/// rows may be stale and the service's sound has stopped with it.
+pub fn bell_swings(snapshot: &Snapshot) -> bool {
+  snapshot.connected
+    && snapshot.sound.snoozed_until.is_none()
+    && snapshot.notifications.iter().any(|n| n.state.is_alerting())
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  fn snapshot(states: &[&str], snoozed_until: Option<&str>, connected: bool) -> Snapshot {
+    let notifications = states
+      .iter()
+      .enumerate()
+      .map(|(i, state)| {
+        serde_json::from_value(serde_json::json!({
+          "id": i.to_string(), "state": state, "title": "t", "message": "m",
+        }))
+        .unwrap()
+      })
+      .collect();
+    let sound = serde_json::from_value(serde_json::json!({
+      "snoozed_until": snoozed_until, "alerting": !states.is_empty(),
+    }))
+    .unwrap();
+    Snapshot {
+      notifications,
+      sound,
+      connected,
+      ..Snapshot::default()
+    }
+  }
+
+  #[test]
+  fn the_bell_swings_for_any_alerting_row() {
+    for state in ["input_needed", "done", "failed"] {
+      assert!(bell_swings(&snapshot(&["working", state], None, true)));
+    }
+  }
+
+  #[test]
+  fn the_bell_rests_when_nothing_needs_attention() {
+    assert!(!bell_swings(&snapshot(&[], None, true)));
+    assert!(!bell_swings(&snapshot(
+      &[
+        "working",
+        "input_needed_ignored",
+        "done_acknowledged",
+        "failed_acknowledged"
+      ],
+      None,
+      true
+    )));
+  }
+
+  #[test]
+  fn the_bell_rests_while_snoozed_or_offline() {
+    let until = Some("2026-09-27T15:04:05Z");
+    assert!(!bell_swings(&snapshot(&["done"], until, true)));
+    assert!(!bell_swings(&snapshot(&["done"], None, false)));
+  }
 
   #[test]
   fn new_and_replacement_alerts_open_the_window() {

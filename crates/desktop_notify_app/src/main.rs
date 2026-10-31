@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bell;
 mod focus;
 mod model;
 
@@ -9,13 +10,17 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use model::{visibility_change, Notification, Snapshot, SoundState, VisibilityChange};
+use model::{bell_swings, visibility_change, Notification, Snapshot, SoundState, VisibilityChange};
+use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 const SERVICE: &str = "http://127.0.0.1:43110";
 const EVENT: &str = "notification-state";
+const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
+/// How often a resting bell checks the last poll for a reason to swing.
+const BELL_IDLE_INTERVAL: Duration = Duration::from_millis(200);
 
 struct AppState {
   service: String,
@@ -279,9 +284,6 @@ fn start_polling(app: AppHandle) {
             )
           };
           let _ = tray.set_tooltip(Some(&tooltip));
-          // The dot marks tasks that need attention, not busy or seen ones.
-          #[cfg(target_os = "macos")]
-          let _ = tray.set_title((alerting > 0).then_some("•"));
         }
       }
       if state.ready.load(Ordering::SeqCst) {
@@ -314,6 +316,43 @@ fn start_polling(app: AppHandle) {
   });
 }
 
+/// Animates the tray bell while the last poll says the alert sound is active. The
+/// only state here is the animation's position; the decision is reread from the
+/// snapshot on every step. This is a dedicated thread, not an async task, because
+/// each icon update blocks until the main thread has applied it.
+fn start_bell_animation(app: AppHandle) -> tauri::Result<()> {
+  let icon = Image::from_bytes(TRAY_ICON)?;
+  let swing = bell::swing_frames(icon.rgba(), icon.width(), icon.height());
+  std::thread::spawn(move || {
+    let mut position = None;
+    loop {
+      let swinging = {
+        let state = app.state::<AppState>();
+        let snapshot = state.snapshot.lock().unwrap_or_else(|e| e.into_inner());
+        bell_swings(&snapshot)
+      };
+      let next = bell::next_position(position, swinging);
+      if next == position {
+        std::thread::sleep(BELL_IDLE_INTERVAL);
+        continue;
+      }
+      position = next;
+      if let Some(tray) = app.tray_by_id("main") {
+        let image = match position {
+          Some(frame) => Image::new(&swing.frames[frame], swing.width, swing.height),
+          None => Image::new(icon.rgba(), icon.width(), icon.height()),
+        };
+        // Only the resting bell is a template, which macOS tints to match the
+        // menu bar; a template would lose the swing's gold. Setting both together
+        // avoids a visible flicker between the two updates.
+        let _ = tray.set_icon_with_as_template(Some(image), position.is_none());
+      }
+      std::thread::sleep(bell::FRAME_INTERVAL);
+    }
+  });
+  Ok(())
+}
+
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
   let show = MenuItem::with_id(app, "show", "Show Notifications", true, None::<&str>)?;
   let hide_item = MenuItem::with_id(app, "hide", "Hide to Tray", true, None::<&str>)?;
@@ -328,9 +367,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     ],
   )?;
   TrayIconBuilder::with_id("main")
-    .icon(tauri::image::Image::from_bytes(include_bytes!(
-      "../icons/tray.png"
-    ))?)
+    .icon(Image::from_bytes(TRAY_ICON)?)
     .icon_as_template(true)
     .tooltip("Desktop Notify")
     .menu(&menu)
@@ -396,6 +433,7 @@ fn main() {
       #[cfg(target_os = "macos")]
       app.set_activation_policy(tauri::ActivationPolicy::Accessory);
       build_tray(app)?;
+      start_bell_animation(app.handle().clone())?;
       if let Some(window) = app.get_webview_window("main") {
         // Match Todo's always-on-top, all-Spaces behavior. Add full-screen
         // auxiliary behavior so alerts can also appear over full-screen apps.
