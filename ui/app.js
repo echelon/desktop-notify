@@ -64,6 +64,94 @@ function element(tag, className, text) {
   return node;
 }
 
+const FULL_VOLUME = 100;
+const volumeOf = (source) => ({ volume: source?.volume ?? FULL_VOLUME, muted: !!source?.muted });
+// How long a control keeps showing its own value after the last send, so a poll
+// that left before that send landed cannot flick the slider back.
+const VOLUME_SETTLE_MS = 600;
+
+function speakerIcon() {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  for (const [className, d] of [['body', 'M4 9.5v5h3.5L12 18.5v-13L7.5 9.5z'], ['waves', 'M15.5 9.5a3.5 3.5 0 0 1 0 5M18 7a7 7 0 0 1 0 10'], ['slash', 'M16 9.5l5 5M21 9.5l-5 5']]) {
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('class', className);
+    path.setAttribute('d', d);
+    svg.append(path);
+  }
+  return svg;
+}
+
+/* One mute button and slider. `send` posts a change. While the user is adjusting,
+   or a change is settling, the control shows its own value instead of the poll's;
+   this is transient UI state, and the service still owns the volume. At most one
+   request is in flight, and only the newest value is sent next, so a fast drag
+   never queues a backlog. Each control belongs to one row ID, so a delayed send
+   for a replaced row reaches only its stale ID, which the service ignores. */
+function createVolumeControl(send, reportError) {
+  const wrap = element('div', 'volume-control');
+  const mute = element('button', 'volume-mute');
+  mute.setAttribute('type', 'button');
+  mute.append(speakerIcon());
+  const slider = element('input', 'volume-slider');
+  slider.type = 'range';
+  slider.min = '0';
+  slider.max = String(FULL_VOLUME);
+  slider.step = '1';
+  const value = element('span', 'volume-value');
+  wrap.append(mute, slider, value);
+  const control = { wrap, mute, slider, value, held: false, settleUntil: 0, local: { volume: FULL_VOLUME, muted: false }, queued: null, sending: false };
+
+  async function flush() {
+    if (control.sending) return;
+    control.sending = true;
+    while (control.queued) {
+      const change = control.queued;
+      control.queued = null;
+      try { await send(change); }
+      catch (error) { reportError(String(error)); }
+    }
+    control.sending = false;
+    control.settleUntil = Date.now() + VOLUME_SETTLE_MS;
+  }
+  function change(update) {
+    Object.assign(control.local, update);
+    control.queued = { ...control.queued, ...update };
+    control.settleUntil = Date.now() + VOLUME_SETTLE_MS;
+    paintVolume(control);
+    return flush();
+  }
+  control.change = change;
+  mute.addEventListener('click', () => change({ muted: !control.local.muted }));
+  slider.addEventListener('input', () => change({ volume: Number(slider.value) }));
+  slider.addEventListener('pointerdown', () => { control.held = true; });
+  for (const event of ['pointerup', 'pointercancel', 'change']) slider.addEventListener(event, () => { control.held = false; });
+  return control;
+}
+
+function paintVolume(control) {
+  const { volume, muted } = control.local;
+  const text = String(volume);
+  // Never move a thumb the user is holding, and only touch the DOM on change.
+  if (!control.held && control.slider.value !== text) control.slider.value = text;
+  control.value.textContent = muted ? 'Muted' : `${volume}%`;
+  control.mute.setAttribute('aria-pressed', String(muted));
+  control.wrap.classList.toggle('is-muted', muted);
+}
+
+function renderVolume(control, source, { enabled, label, muteTitle, sliderTitle }) {
+  const adjusting = control.held || control.sending || Date.now() < control.settleUntil;
+  if (!adjusting) control.local = volumeOf(source);
+  paintVolume(control);
+  control.mute.disabled = !enabled;
+  control.slider.disabled = !enabled;
+  control.mute.setAttribute('aria-label', `${control.local.muted ? 'Unmute' : 'Mute'} ${label}`);
+  control.mute.title = muteTitle;
+  control.slider.setAttribute('aria-label', `Volume for ${label}`);
+  control.slider.title = sliderTitle(control.local);
+}
+
 function createRow(alert) {
   const row = element('article', 'notification');
   row.dataset.id = alert.id;
@@ -110,9 +198,15 @@ function createRow(alert) {
   const status = element('p', 'focus-status');
   status.setAttribute('role', 'status');
   const timing = element('p', 'timing');
-  // Timing sits between the task line and the expandable details.
-  row.append(heading, timing, details, status);
-  return { row, agent, kind, project, session, title, preview, summary, context, fields, focus, acknowledge, clear, message, status, timing };
+  const volume = createVolumeControl(
+    (change) => invoke('set_notification_volume', { id: alert.id, ...change }),
+    (error) => { if (rows.has(alert.id)) { statuses.set(alert.id, error); render(snapshot); } },
+  );
+  const meta = element('div', 'row-meta');
+  meta.append(timing, volume.wrap);
+  // Timing and this row's volume sit between the task line and the details.
+  row.append(heading, meta, details, status);
+  return { row, volume, agent, kind, project, session, title, preview, summary, context, fields, focus, acknowledge, clear, message, status, timing };
 }
 
 const optionalText = (value) => typeof value === 'string' ? value.trim() : '';
@@ -316,6 +410,16 @@ function render(next) {
     // Only alerting rows can be dismissed; quiet rows are already acknowledged.
     refs.acknowledge.hidden = !STATES[state].alerting;
     refs.acknowledge.disabled = pending.has(alert.id) || !next.connected;
+    const global = volumeOf(next.sound);
+    renderVolume(refs.volume, alert, {
+      enabled: next.connected,
+      label: alert.title,
+      muteTitle: 'Mute this task only; other tasks keep sounding\nPOST /volume/{id} {"muted": true}',
+      sliderTitle: ({ volume, muted }) => {
+        const plays = muted || global.muted ? 0 : Math.round(volume * global.volume / FULL_VOLUME);
+        return `This task ${volume}% × all tasks ${global.volume}% = plays at ${plays}%\nPOST /volume/{id} {"volume": 0–100}`;
+      },
+    });
     refs.status.hidden = !statuses.has(alert.id);
     refs.status.textContent = statuses.get(alert.id) || '';
     renderTiming(refs, alert);
@@ -356,10 +460,30 @@ function renderSound() {
   byId('silence-all').disabled = unavailable || (!sound.alerting && !snoozed);
   byId('snooze-1').disabled = unavailable;
   byId('snooze-5').disabled = unavailable;
-  let text = sound.alerting ? 'Sound on' : 'All sounds stopped';
+  byId('clear-all').disabled = unavailable || snapshot.notifications.length === 0;
+  renderVolume(masterVolume, sound, {
+    enabled: snapshot.connected,
+    label: 'all tasks',
+    muteTitle: 'Mute every task; alerts stay listed\nPOST /sound/volume {"muted": true}',
+    sliderTitle: ({ volume }) => `Volume for all tasks: ${volume}%, multiplied by each task's own volume\nPOST /sound/volume {"volume": 0–100}`,
+  });
+  // Muted rows are skipped, so sound only stops if nothing audible is left.
+  const master = volumeOf(sound);
+  const audible = !master.muted && master.volume > 0 && snapshot.notifications.some((alert) => {
+    const row = volumeOf(alert);
+    return STATES[taskState(alert)].alerting && !row.muted && row.volume > 0;
+  });
+  let text = sound.alerting ? (audible ? 'Sound on' : 'Muted') : 'All sounds stopped';
   if (snoozed) text = `Snoozed · resumes in ${formatRemaining(remaining)}`;
   byId('sound-status').textContent = soundError || text;
 }
+
+/* Global volume. Created up front: the bar stays visible with no tasks. */
+const masterVolume = createVolumeControl(
+  (change) => invoke('set_sound_volume', change),
+  (error) => { soundError = error; renderSound(); },
+);
+byId('master-volume').append(masterVolume.wrap);
 
 async function updateSound(command, args) {
   if (soundPending || !snapshot.connected) return;
@@ -404,6 +528,7 @@ async function updateNotification(id, command) {
 }
 
 byId('silence-all').addEventListener('click', () => updateSound('stop_all_sound'));
+byId('clear-all').addEventListener('click', () => updateSound('clear_all_notifications'));
 byId('snooze-1').addEventListener('click', () => updateSound('snooze_sound', { seconds: 60 }));
 byId('snooze-5').addEventListener('click', () => updateSound('snooze_sound', { seconds: 300 }));
 byId('api').addEventListener('click', () => invoke('open_web_interface').catch((error) => { soundError = String(error); renderSound(); }));

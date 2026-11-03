@@ -93,6 +93,9 @@ async fn main() -> anyhow::Result<()> {
         Logger::default()
           .exclude("/notifications")
           .exclude("/sound")
+          // Sliders send a burst of these per drag.
+          .exclude("/sound/volume")
+          .exclude_regex("^/volume/")
           .exclude("/working")
           .exclude("/desktop/status"),
       )
@@ -113,6 +116,8 @@ async fn main() -> anyhow::Result<()> {
       .route("/sound", web::get().to(sound))
       .route("/sound/snooze", web::post().to(snooze))
       .route("/sound/resume", web::post().to(resume_sound))
+      .route("/sound/volume", web::post().to(set_sound_volume))
+      .route("/volume/{id}", web::post().to(set_row_volume))
       .route("/desktop/status", web::post().to(desktop_status))
   })
   .bind(&bind_address)?;

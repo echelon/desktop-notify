@@ -13,11 +13,14 @@
 //!   drift naturally relative to one another. Replacing the loop session
 //!   (`PlayLoop` while one is running) or `StopAll` signals every iterator
 //!   and the supervisor via a shared `Arc<AtomicBool>` polled every 50ms.
+//!
+//! Volume is one shared gain that every voice rereads on that same poll, so a
+//! change applies to sounds already playing without restarting the loop.
 
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -29,11 +32,14 @@ use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 use serde_derive::Serialize;
 
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// Gain is stored as an integer so it fits an atomic: 10_000 is full volume.
+const GAIN_SCALE: f32 = 10_000.0;
 
 #[derive(Clone)]
 pub struct AudioPlayerHandle {
   tx: Sender<AudioCommand>,
   status: Arc<Mutex<InternalStatus>>,
+  gain: Arc<AtomicU32>,
 }
 
 impl AudioPlayerHandle {
@@ -44,12 +50,22 @@ impl AudioPlayerHandle {
       Self {
         tx,
         status: Arc::new(Mutex::new(InternalStatus::default())),
+        gain: full_gain(),
       },
       rx,
     )
   }
   pub fn play_loop(&self, spec: LoopSpec) {
     let _ = self.tx.send(AudioCommand::PlayLoop(spec));
+  }
+
+  /// Sets the amplitude (0.0 to 1.0) of every current and future voice. It is an
+  /// atomic rather than a command so the engine is not woken for each slider
+  /// step, and so setting it before `play_loop` means a new loop can never start
+  /// at the previous row's volume.
+  pub fn set_gain(&self, gain: f32) {
+    let scaled = (gain.clamp(0.0, 1.0) * GAIN_SCALE).round() as u32;
+    self.gain.store(scaled, Ordering::Relaxed);
   }
 
   pub fn stop_all(&self) {
@@ -73,6 +89,7 @@ impl AudioPlayerHandle {
       current_jitter_millis: s.current_jitter_millis,
       loop_pool_size: s.loop_pool_size,
       loop_uptime_secs: s.loop_started.map(|t| t.elapsed().as_secs()),
+      gain: read_gain(&self.gain),
     }
   }
 }
@@ -87,6 +104,8 @@ pub struct EngineStatus {
   pub current_jitter_millis: u64,
   pub loop_pool_size: u32,
   pub loop_uptime_secs: Option<u64>,
+  /// Amplitude voices play at: global volume times the playing row's volume.
+  pub gain: f32,
 }
 
 #[derive(Default)]
@@ -135,15 +154,25 @@ pub struct LoopSpec {
   pub escalate_waits_secs: [u64; 3],
 }
 
+fn full_gain() -> Arc<AtomicU32> {
+  Arc::new(AtomicU32::new(GAIN_SCALE as u32))
+}
+
+fn read_gain(gain: &AtomicU32) -> f32 {
+  gain.load(Ordering::Relaxed) as f32 / GAIN_SCALE
+}
+
 pub fn spawn_audio_player() -> (AudioPlayerHandle, JoinHandle<()>) {
   let (tx, rx) = mpsc::channel::<AudioCommand>();
   let status = Arc::new(Mutex::new(InternalStatus::default()));
   let status_for_engine = status.clone();
+  let gain = full_gain();
+  let gain_for_engine = gain.clone();
   let thread = thread::Builder::new()
     .name("agent-notify-audio".to_string())
-    .spawn(move || run_audio_engine(rx, status_for_engine))
+    .spawn(move || run_audio_engine(rx, status_for_engine, gain_for_engine))
     .expect("spawn audio engine thread");
-  (AudioPlayerHandle { tx, status }, thread)
+  (AudioPlayerHandle { tx, status, gain }, thread)
 }
 
 #[derive(Debug)]
@@ -153,7 +182,11 @@ pub(crate) enum AudioCommand {
   Shutdown,
 }
 
-fn run_audio_engine(rx: Receiver<AudioCommand>, status: Arc<Mutex<InternalStatus>>) {
+fn run_audio_engine(
+  rx: Receiver<AudioCommand>,
+  status: Arc<Mutex<InternalStatus>>,
+  gain: Arc<AtomicU32>,
+) {
   let (_stream, stream_handle) = match OutputStream::try_default() {
     Ok(s) => s,
     Err(e) => {
@@ -173,7 +206,12 @@ fn run_audio_engine(rx: Receiver<AudioCommand>, status: Arc<Mutex<InternalStatus
           log::warn!("play_loop: empty sound pool, ignoring");
           continue;
         }
-        current_loop = Some(start_loop_supervisor(&stream_handle, spec, status.clone()));
+        current_loop = Some(start_loop_supervisor(
+          &stream_handle,
+          spec,
+          status.clone(),
+          gain.clone(),
+        ));
       }
       AudioCommand::StopAll => stop_current_loop(&mut current_loop, &status),
       AudioCommand::Shutdown => {
@@ -190,6 +228,7 @@ fn start_loop_supervisor(
   stream_handle: &OutputStreamHandle,
   spec: LoopSpec,
   status: Arc<Mutex<InternalStatus>>,
+  gain: Arc<AtomicU32>,
 ) -> LoopController {
   // Initialize the visible status before any iterator starts, so a /state
   // query racing the spawn sees the new loop, not the previous one's tail.
@@ -210,7 +249,7 @@ fn start_loop_supervisor(
   let stream_handle = stream_handle.clone();
   let thread = thread::Builder::new()
     .name("agent-notify-loop-supervisor".to_string())
-    .spawn(move || run_loop_supervisor(stream_handle, spec, stop_for_thread, status))
+    .spawn(move || run_loop_supervisor(stream_handle, spec, stop_for_thread, status, gain))
     .expect("spawn loop supervisor thread");
   LoopController {
     stop,
@@ -242,6 +281,7 @@ fn run_loop_supervisor(
   spec: LoopSpec,
   stop: Arc<AtomicBool>,
   status: Arc<Mutex<InternalStatus>>,
+  gain: Arc<AtomicU32>,
 ) {
   let pool_len = spec.pool.len();
   if pool_len == 0 {
@@ -260,6 +300,7 @@ fn run_loop_supervisor(
     gap_millis.clone(),
     jitter_millis.clone(),
     stop.clone(),
+    gain.clone(),
     0,
   ));
 
@@ -303,6 +344,7 @@ fn run_loop_supervisor(
       gap_millis.clone(),
       jitter_millis.clone(),
       stop.clone(),
+      gain.clone(),
       layer + 1,
     ));
     let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
@@ -330,13 +372,14 @@ fn spawn_iterator(
   gap_millis: Arc<AtomicU64>,
   jitter_millis: Arc<AtomicU64>,
   stop: Arc<AtomicBool>,
+  gain: Arc<AtomicU32>,
   layer: usize,
 ) -> JoinHandle<()> {
   log::info!("loop voice {} starting: {}", layer + 1, path.display());
   let stream_handle = stream_handle.clone();
   thread::Builder::new()
     .name(format!("agent-notify-loop-{}", layer + 1))
-    .spawn(move || run_loop_iterator(stream_handle, path, gap_millis, jitter_millis, stop))
+    .spawn(move || run_loop_iterator(stream_handle, path, gap_millis, jitter_millis, stop, gain))
     .expect("spawn loop iterator thread")
 }
 
@@ -346,6 +389,7 @@ fn run_loop_iterator(
   gap_millis: Arc<AtomicU64>,
   jitter_millis: Arc<AtomicU64>,
   stop: Arc<AtomicBool>,
+  gain: Arc<AtomicU32>,
 ) {
   let sink = match Sink::try_new(&stream_handle) {
     Ok(s) => s,
@@ -358,6 +402,8 @@ fn run_loop_iterator(
   let mut rng = rand::rng();
 
   while !stop.load(Ordering::SeqCst) {
+    // Before enqueueing, so a sound can't start at a stale volume.
+    sink.set_volume(read_gain(&gain));
     if let Err(e) = enqueue_sound(&sink, &path) {
       log::warn!("loop iterator: failed to enqueue {}: {}", path.display(), e);
       return;
@@ -368,6 +414,7 @@ fn run_loop_iterator(
         sink.stop();
         return;
       }
+      sink.set_volume(read_gain(&gain));
       thread::sleep(STOP_POLL_INTERVAL);
     }
 

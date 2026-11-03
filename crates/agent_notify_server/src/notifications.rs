@@ -18,7 +18,6 @@ pub struct DesktopStatus {
   pub error: Option<String>,
 }
 
-#[derive(Default)]
 pub struct NotificationState {
   /// Most recently updated first; one entry per session (None is the legacy slot).
   pub active: Vec<Notification>,
@@ -26,11 +25,30 @@ pub struct NotificationState {
   /// Wall-clock deadline for a global snooze. It is compared with the current
   /// time whenever state is touched rather than woken by a timer.
   pub snoozed_until: Option<DateTime<Utc>>,
+  /// Global volume percentage, multiplied by the playing row's own volume.
+  pub volume: u8,
+  /// Global mute; the loop keeps running at zero gain.
+  pub muted: bool,
   /// Session ID → the tool call an `input_needed` row is waiting on. Tools run in
   /// parallel, so only that call finishing may resume the row to `working`.
   pub waiting_tools: std::collections::HashMap<String, String>,
   pub desktop: DesktopStatus,
   pub desktop_seen: Option<Instant>,
+}
+
+impl Default for NotificationState {
+  fn default() -> Self {
+    Self {
+      active: Vec::new(),
+      audio_id: None,
+      snoozed_until: None,
+      volume: notify_types::MAX_VOLUME,
+      muted: false,
+      waiting_tools: Default::default(),
+      desktop: Default::default(),
+      desktop_seen: None,
+    }
+  }
 }
 
 impl NotificationState {

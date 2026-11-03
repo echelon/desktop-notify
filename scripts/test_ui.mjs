@@ -286,7 +286,7 @@ test('each row shows a timing line above its details for running, waiting, and f
   assert.equal(timing('n').textContent, 'Finished less than 1 minute ago');
   assert.equal(timing('legacy').hidden, true);
   const children = page.row('d').children;
-  assert.equal(children.indexOf(timing('d')) + 1, children.indexOf(page.row('d').find('details')));
+  assert.equal(children.indexOf(timing('d').parent) + 1, children.indexOf(page.row('d').find('details')));
   const interactions = await ui([notification('i', { state: 'working', times: { user_input_at: ago(1000), user_action_at: ago(2000), last_request_at: ago(1000) } })]);
   assert.match(interactions.row('i').find('timing').title, /Your last input in the terminal: .*\nYour last action in the app or web: .*\nLast API request: /);
 });
@@ -371,4 +371,93 @@ test('sorts group attention or work first and flip newest/oldest within the orde
   // Sorting combines with a filter.
   page.element('filter-asking').handlers.click();
   assert.deepEqual(order(page), ['ask', 'ignored']);
+});
+
+// Arguments come from the page's VM realm; JSON makes them comparable here.
+const lastCall = (page) => JSON.parse(JSON.stringify(page.calls.at(-1)));
+
+test('the global and row volume controls call their own commands and show the service value', async () => {
+  const page = await ui([notification(), notification('b', { volume: 30, muted: true })], undefined, { alerting: true, volume: 50, muted: false });
+  const master = page.element('master-volume');
+  assert.equal(master.find('volume-slider').value, '50');
+  assert.equal(master.find('volume-value').textContent, '50%');
+  assert.equal(page.row('a').find('volume-slider').value, '100');
+  assert.equal(page.row('b').find('volume-slider').value, '30');
+  assert.equal(page.row('b').find('volume-mute')['aria-pressed'], 'true');
+  assert.match(page.row('b').find('volume-mute').title, /POST \/volume\/\{id\}/);
+  assert.match(page.row('a').find('volume-slider').title, /100% × all tasks 50% = plays at 50%/);
+
+  master.find('volume-slider').value = '20';
+  await master.find('volume-slider').handlers.input();
+  assert.deepEqual(lastCall(page), ['set_sound_volume', { volume: 20 }]);
+  await master.find('volume-mute').handlers.click();
+  assert.deepEqual(lastCall(page), ['set_sound_volume', { muted: true }]);
+
+  await page.row('a').find('volume-mute').handlers.click();
+  assert.deepEqual(lastCall(page), ['set_notification_volume', { id: 'a', muted: true }]);
+  page.row('b').find('volume-slider').value = '70';
+  await page.row('b').find('volume-slider').handlers.input();
+  assert.deepEqual(lastCall(page), ['set_notification_volume', { id: 'b', volume: 70 }]);
+});
+
+test('polling does not move a held slider, and a drag sends only the newest value', async () => {
+  const sends = [];
+  let release;
+  const page = await ui([notification()], (command, args) => {
+    if (command !== 'set_notification_volume') return undefined;
+    sends.push(args.volume);
+    return new Promise((resolve) => { release = resolve; });
+  });
+  const slider = page.row('a').find('volume-slider');
+  slider.handlers.pointerdown();
+  for (const value of ['90', '80', '70']) { slider.value = value; slider.handlers.input(); }
+  page.update([notification('a', { volume: 100 })]);
+  assert.equal(slider.value, '70');
+  release();
+  await new Promise(setImmediate);
+  assert.deepEqual(sends, [90, 70]);
+  release();
+  await new Promise(setImmediate);
+  slider.handlers.pointerup();
+});
+
+test('a delayed volume failure stays on its row and offline disables the controls', async () => {
+  let reject;
+  const page = await ui([notification(), notification('b')], (command) => {
+    if (command === 'set_notification_volume') return new Promise((_, r) => { reject = r; });
+  });
+  const pending = page.row('a').find('volume-mute').handlers.click();
+  page.update([notification('c', { session_id: 'session-a' }), notification('b')]);
+  reject(new Error('Service offline'));
+  await pending;
+  assert.equal(page.row('c').find('focus-status').hidden, true);
+  assert.equal(page.row('b').find('focus-status').hidden, true);
+  page.update([notification('c', { session_id: 'session-a' })], false);
+  assert.equal(page.row('c').find('volume-slider').disabled, true);
+  assert.equal(page.row('c').find('volume-mute').disabled, true);
+  assert.equal(page.element('master-volume').find('volume-slider').disabled, true);
+});
+
+test('sound status says muted when nothing audible is left, and the bar stays without rows', async () => {
+  const page = await ui([notification('a', { muted: true })]);
+  assert.equal(page.element('sound-status').textContent, 'Muted');
+  page.update([notification('a', { muted: true }), notification('b')]);
+  assert.equal(page.element('sound-status').textContent, 'Sound on');
+  page.update([notification('b')], true, { alerting: true, muted: true });
+  assert.equal(page.element('sound-status').textContent, 'Muted');
+  page.update([], true, { alerting: false, volume: 40 });
+  assert.equal(page.element('sound-controls').hidden, true);
+  assert.equal(page.element('master-volume').hidden, undefined);
+  assert.equal(page.element('master-volume').find('volume-slider').disabled, false);
+});
+
+test('Clear all calls its own command and needs rows and a connection', async () => {
+  const page = await ui([notification(), notification('b')]);
+  assert.equal(page.element('clear-all').disabled, false);
+  await page.element('clear-all').handlers.click();
+  assert.deepEqual(page.calls.at(-1), ['clear_all_notifications', undefined]);
+  page.update([notification()], false);
+  assert.equal(page.element('clear-all').disabled, true);
+  page.update([], true);
+  assert.equal(page.element('clear-all').disabled, true);
 });

@@ -55,6 +55,13 @@ Inherit the root rules, including **two-space Rust indentation**.
   silencing rows. Never use a timer or sleep for snooze expiry: compare the
   deadline with `Utc::now()` when state is locked (`lock_and_resume`). Deadlines
   beyond `MAX_SNOOZE` mean the clock moved backwards and count as elapsed.
+- Volume is a whole percentage. Sound plays at global × row gain, set through the
+  shared atomic in `reconcile_audio` before any loop change, and voices reread it
+  every 50 ms; a volume change must not restart the loop. Loop selection skips rows
+  that are muted or at zero, so one muted session cannot silence another; global mute
+  keeps the loop running at zero gain. Named sessions keep `volume`/`muted` across
+  replacements. `/volume/{id}` is a user action: it never changes state, order, or
+  `updated_at`, and stale IDs return `updated: false`.
 - `/notifications` includes quiet rows. Read endpoints must not alter playback,
   except that resuming an elapsed snooze on any read is how expiry is observed.
 - `POST /stop` clears every row, any snooze, and all audio. Legacy `GET /stop`
