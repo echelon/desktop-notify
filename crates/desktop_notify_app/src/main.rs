@@ -18,6 +18,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 const SERVICE: &str = "http://127.0.0.1:43110";
 const EVENT: &str = "notification-state";
+const OFFLINE: &str = "Cannot reach the notification service. Please try again.";
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
 /// How often a resting bell checks the last poll for a reason to swing.
 const BELL_IDLE_INTERVAL: Duration = Duration::from_millis(200);
@@ -130,6 +131,57 @@ async fn snooze_sound(
   update_sound(&app, &state, request).await
 }
 
+/// Global volume and mute, multiplied by each row's own (`POST /sound/volume`).
+#[tauri::command]
+async fn set_sound_volume(
+  volume: Option<u8>,
+  muted: Option<bool>,
+  app: AppHandle,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let request = state
+    .client
+    .post(format!("{}/sound/volume", state.service))
+    .json(&serde_json::json!({ "volume": volume, "muted": muted }));
+  update_sound(&app, &state, request).await
+}
+
+/// One row's volume and mute (`POST /volume/{id}`). A stale ID changes nothing.
+#[tauri::command]
+async fn set_notification_volume(
+  id: String,
+  volume: Option<u8>,
+  muted: Option<bool>,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  valid_id(&id)?;
+  state
+    .client
+    .post(format!("{}/volume/{id}", state.service))
+    .json(&serde_json::json!({ "volume": volume, "muted": muted }))
+    .send()
+    .await
+    .map_err(|_| OFFLINE.to_string())?
+    .error_for_status()
+    .map_err(|e| e.to_string())?;
+  Ok(())
+}
+
+/// Clear all (`POST /stop`): removes every row, cancels any snooze, and stops
+/// all audio. The next poll reconciles the rows and hides the emptied window.
+#[tauri::command]
+async fn clear_all_notifications(state: State<'_, AppState>) -> Result<(), String> {
+  state
+    .client
+    .post(format!("{}/stop", state.service))
+    .send()
+    .await
+    .map_err(|_| OFFLINE.to_string())?
+    .error_for_status()
+    .map_err(|e| e.to_string())?;
+  Ok(())
+}
+
 /// Opens the service's web interface (task management and the REST API
 /// reference) in the default browser. The URL is the validated local service.
 #[tauri::command]
@@ -161,7 +213,7 @@ async fn update_sound(
   let sound: SoundState = request
     .send()
     .await
-    .map_err(|_| "Cannot reach the notification service. Please try again.".to_string())?
+    .map_err(|_| OFFLINE.to_string())?
     .error_for_status()
     .map_err(|e| e.to_string())?
     .json()
@@ -177,17 +229,22 @@ async fn update_sound(
   Ok(())
 }
 
-async fn update_notification(id: &str, action: &str, state: &AppState) -> Result<(), String> {
-  // IDs are server-generated hex strings; never allow user text into a URL path.
+/// IDs are server-generated hex strings; never allow user text into a URL path.
+fn valid_id(id: &str) -> Result<(), String> {
   if id.len() != 32 || !id.bytes().all(|c| c.is_ascii_hexdigit()) {
     return Err("Invalid notification ID".into());
   }
+  Ok(())
+}
+
+async fn update_notification(id: &str, action: &str, state: &AppState) -> Result<(), String> {
+  valid_id(id)?;
   state
     .client
     .post(format!("{}/{action}/{id}", state.service))
     .send()
     .await
-    .map_err(|_| "Cannot reach the notification service. Please try again.".to_string())?
+    .map_err(|_| OFFLINE.to_string())?
     .error_for_status()
     .map_err(|e| e.to_string())?;
   // The poller reconciles state and hides only if there is no newer alert.
@@ -427,7 +484,10 @@ fn main() {
       acknowledge_notification,
       stop_all_sound,
       open_web_interface,
-      snooze_sound
+      snooze_sound,
+      set_sound_volume,
+      set_notification_volume,
+      clear_all_notifications
     ])
     .setup(|app| {
       #[cfg(target_os = "macos")]

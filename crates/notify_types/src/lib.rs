@@ -70,6 +70,35 @@ pub struct Notification {
   /// Server-assigned lifecycle timestamps; absent from older services.
   #[serde(default, skip_serializing_if = "TaskTimes::is_empty")]
   pub times: TaskTimes,
+  /// This row's own volume percentage, multiplied by the global volume. Absent
+  /// (from older services and backups) means full volume.
+  #[serde(default = "full_volume", skip_serializing_if = "is_full_volume")]
+  pub volume: u8,
+  /// Mutes this row alone; the sound falls through to the next audible row.
+  #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+  pub muted: bool,
+}
+
+/// Volumes are whole percentages, which keeps wire types `Eq`.
+pub const MAX_VOLUME: u8 = 100;
+
+fn full_volume() -> u8 {
+  MAX_VOLUME
+}
+
+fn is_full_volume(volume: &u8) -> bool {
+  *volume == MAX_VOLUME
+}
+
+/// The amplitude a global and a row volume produce together: their product, or
+/// silence when either is muted. Percentages are capped at 100, so this never
+/// amplifies.
+pub fn combined_gain(global: (u8, bool), row: (u8, bool)) -> f32 {
+  if global.1 || row.1 {
+    return 0.0;
+  }
+  let percent = |volume: u8| f32::from(volume.min(MAX_VOLUME)) / f32::from(MAX_VOLUME);
+  percent(global.0) * percent(row.0)
 }
 
 /// When things happened to a session's row (RFC 3339 UTC on the wire). The
@@ -121,13 +150,29 @@ impl TaskTimes {
 
 /// Global sound controls shared by every row. Alerting rows feed the one
 /// shared loop; a snooze mutes that loop until a recorded wall-clock time.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SoundState {
   /// When the snooze ends (RFC 3339 on the wire); `None` when not snoozed.
   pub snoozed_until: Option<DateTime<Utc>>,
-  /// Whether any row still wants sound (it may currently be snoozed).
+  /// Whether any row still wants sound (it may currently be snoozed or muted).
   pub alerting: bool,
+  /// Global volume percentage, multiplied by the playing row's own volume.
+  pub volume: u8,
+  /// Global mute. The loop keeps running silently, so unmuting is immediate.
+  pub muted: bool,
+}
+
+// Hand-written so an older service without these fields reads as full volume.
+impl Default for SoundState {
+  fn default() -> Self {
+    Self {
+      snoozed_until: None,
+      alerting: false,
+      volume: MAX_VOLUME,
+      muted: false,
+    }
+  }
 }
 
 /// Longest accepted snooze. Also bounds how far a backwards wall-clock jump can
@@ -384,6 +429,27 @@ mod tests {
   }
 
   #[test]
+  fn volume_fields_default_to_full_and_stay_off_the_wire_until_changed() {
+    let legacy: Notification =
+      serde_json::from_str(r#"{"id":"a","state":"done","title":"t","message":"m"}"#).unwrap();
+    assert_eq!((legacy.volume, legacy.muted), (MAX_VOLUME, false));
+    let json = serde_json::to_value(&legacy).unwrap();
+    assert!(json.get("volume").is_none() && json.get("muted").is_none());
+    let sound: SoundState = serde_json::from_str(r#"{"alerting":true}"#).unwrap();
+    assert_eq!((sound.volume, sound.muted), (MAX_VOLUME, false));
+  }
+
+  #[test]
+  fn gain_is_the_product_of_both_volumes_and_silent_when_either_is_muted() {
+    assert_eq!(combined_gain((100, false), (100, false)), 1.0);
+    assert!((combined_gain((50, false), (40, false)) - 0.2).abs() < 1e-6);
+    assert_eq!(combined_gain((50, true), (40, false)), 0.0);
+    assert_eq!(combined_gain((50, false), (40, true)), 0.0);
+    assert_eq!(combined_gain((0, false), (100, false)), 0.0);
+    assert_eq!(combined_gain((255, false), (255, false)), 1.0);
+  }
+
+  #[test]
   fn sound_state_uses_rfc3339_timestamps_and_tolerates_older_servers() {
     let until = DateTime::parse_from_rfc3339("2026-09-27T15:04:05Z")
       .unwrap()
@@ -391,11 +457,12 @@ mod tests {
     let state = SoundState {
       snoozed_until: Some(until),
       alerting: true,
+      ..SoundState::default()
     };
     let json = serde_json::to_string(&state).unwrap();
     assert_eq!(
       json,
-      r#"{"snoozed_until":"2026-09-27T15:04:05Z","alerting":true}"#
+      r#"{"snoozed_until":"2026-09-27T15:04:05Z","alerting":true,"volume":100,"muted":false}"#
     );
     assert_eq!(serde_json::from_str::<SoundState>(&json).unwrap(), state);
     assert_eq!(

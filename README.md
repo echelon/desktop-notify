@@ -69,7 +69,13 @@ a service restart, but not a reboot.
   `POST /dismiss/{id}` (Clear) removes one row. Both return `{stopped: bool}`, and
   stale IDs are harmless.
 - `GET /notifications` returns all rows, including quiet ones.
-- `GET /sound` returns `{snoozed_until, alerting}` (an RFC 3339 UTC timestamp or `null`).
+- `GET /sound` returns `{snoozed_until, alerting, volume, muted}` (`snoozed_until` is an RFC
+  3339 UTC timestamp or `null`).
+- `POST /sound/volume` with `{"volume": 40}` and/or `{"muted": true}` sets the global volume
+  (0 to 100). `POST /volume/{id}` takes the same body for one row, which keeps it across that
+  session's updates; a stale ID returns `{"updated": false}`. Sound plays at the product of
+  the two and changes without restarting the loop. A row that is muted or at zero is skipped,
+  so its sound falls through to the next audible row; global mute silences the running loop.
 - `POST /sound/stop` (also `GET`) quiets everything: every alerting row is acknowledged and any
   snooze is cancelled. Rows stay listed; later updates sound again. The
   `stop-sound` shell alias calls it. Legacy aliases using `GET /stop` have the
@@ -82,7 +88,7 @@ a service restart, but not a reboot.
 - `GET /state` includes `notifications`, `audio_notification_id`, `sound`, and
   desktop/audio status.
 
-One shared sound loop plays for the newest `input_needed` row, else `failed`,
+One shared sound loop plays for the newest audible `input_needed` row, else `failed`,
 else `done`. Questions and failures use `alert_await_user_input_sound`;
 completions use `alert_done_sound`. Dismissing or clearing the audible row moves
 on to another outstanding alert; changes to other rows do not interrupt
@@ -238,7 +244,11 @@ frontend is plain HTML/CSS/JavaScript bundled by Tauri; no Node build step is ne
   message**) for the full text. Only alerting rows open the window or animate the tray bell.
 - Sound is global. The bar above the status line has **Stop sound** (`POST
   /sound/stop`, retaining every row), **Snooze 1 min**, and **Snooze 5 min**
-  (`POST /sound/snooze`), with a countdown while snoozed. The footer's **Web API ↗**
+  (`POST /sound/snooze`), with a countdown while snoozed, plus **Clear all** (`POST
+  /stop`), which removes every row. Below it, an always-visible mute button and
+  slider set the volume for all tasks (`POST /sound/volume`). Each row has a smaller
+  pair of its own (`POST /volume/{id}`); sound plays at the product of the two. Muted
+  alerts still open the window and animate the bell. The footer's **Web API ↗**
   opens the web interface.
 - **×** calls `POST /dismiss/{id}` and removes only that row. The window stays open
   while other entries remain; clearing the last entry hides it.

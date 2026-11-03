@@ -45,9 +45,11 @@
         <button id="silence-all" class="sound-button stop" type="button" title="Stop sound for every current entry; entries stay listed&#10;POST /sound/stop">Stop sound</button>
         <button id="snooze-1" class="sound-button" type="button" title="Mute all sound for 1 minute&#10;POST /sound/snooze {&quot;seconds&quot;: 60}">Snooze 1 min</button>
         <button id="snooze-5" class="sound-button" type="button" title="Mute all sound for 5 minutes&#10;POST /sound/snooze {&quot;seconds&quot;: 300}">Snooze 5 min</button>
+        <button id="clear-all" class="sound-button clear-all" type="button" title="Remove every entry, cancel any snooze, and stop all sound&#10;POST /stop">Clear all</button>
       </div>
       <p id="sound-status" class="sound-status" role="status" aria-live="polite"></p>
     </section>
+    <section id="master-volume" class="master-volume" aria-label="Volume for all agents"></section>
     <footer><span id="connection" class="connection">Connecting…</span><button id="api" class="footer-link" type="button" title="Web interface and REST API reference">Web API ↗</button><span class="footer-hint">Always on top · <kbd>esc</kbd> to hide</span></footer>
     <div id="resize" aria-hidden="true"></div>
   </div>

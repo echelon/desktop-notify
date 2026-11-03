@@ -232,6 +232,12 @@ fn replace_row(
     if notification.agent.is_none() {
       notification.agent = previous.agent;
     }
+    // A row's volume is the session's setting, so it outlives the row's ID.
+    // Unassigned rows come from unrelated callers and start fresh.
+    if notification.session_id.is_some() {
+      notification.volume = previous.volume;
+      notification.muted = previous.muted;
+    }
   }
   notification.context.apply(context.unwrap_or_default());
   current.active.insert(0, notification.clone());
@@ -268,6 +274,8 @@ fn notify(state: &ServerState, request: NotificationRequest, task: TaskState) ->
     context: Default::default(),
     origin: request.origin,
     times: Default::default(),
+    volume: notify_types::MAX_VOLUME,
+    muted: false,
   };
   // Serialize replacement and dismissal with their corresponding audio command.
   let mut current = state
@@ -391,6 +399,8 @@ pub async fn working(
     context: Default::default(),
     origin: request.origin,
     times: Default::default(),
+    volume: notify_types::MAX_VOLUME,
+    muted: false,
   };
   let notification = replace_row(
     &mut current,
@@ -439,6 +449,8 @@ pub(crate) fn sound_state(current: &NotificationState) -> notify_types::SoundSta
   notify_types::SoundState {
     snoozed_until: current.snoozed_until,
     alerting: current.active.iter().any(|n| n.state.is_alerting()),
+    volume: current.volume,
+    muted: current.muted,
   }
 }
 
@@ -446,6 +458,12 @@ pub(crate) fn sound_state(current: &NotificationState) -> notify_types::SoundSta
 /// failures, then completions. Changes to other rows must not restart or stop
 /// this loop. A global snooze mutes the loop without changing row states, so
 /// it resumes afterwards.
+///
+/// Rows muted or at zero volume are skipped, so silencing one session cannot
+/// also silence another session that needs the user. Global mute instead keeps
+/// the loop running at zero gain: nothing else could be heard anyway, and
+/// unmuting continues from the same escalation stage. Gain is set before any
+/// loop change so the new loop never starts at the previous row's volume.
 pub(crate) fn reconcile_audio(state: &ServerState, current: &mut NotificationState) {
   if current.snoozed_until.is_some() && !snooze_active(current, Utc::now()) {
     current.snoozed_until = None;
@@ -455,8 +473,21 @@ pub(crate) fn reconcile_audio(state: &ServerState, current: &mut NotificationSta
   } else {
     [TaskState::InputNeeded, TaskState::Failed, TaskState::Done]
       .into_iter()
-      .find_map(|task| current.active.iter().find(|n| n.state == task))
+      .find_map(|task| {
+        current
+          .active
+          .iter()
+          .find(|n| n.state == task && !n.muted && n.volume > 0)
+      })
   };
+  // With nothing to play the gain stays put: raising it here would let a muted
+  // row's voices get louder during the moment before they see the stop.
+  if let Some(row) = next {
+    state.audio.set_gain(notify_types::combined_gain(
+      (current.volume, current.muted),
+      (row.volume, row.muted),
+    ));
+  }
   let next_id = next.map(|n| n.id.clone());
   if current.audio_id == next_id {
     return;
@@ -520,6 +551,83 @@ pub async fn acknowledge(state: web::Data<ServerState>, id: web::Path<String>) -
     reconcile_audio(&state, &mut current);
   }
   HttpResponse::Ok().json(DismissResponse { stopped })
+}
+
+/// Body of both volume endpoints. Omitted fields stay as they are.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VolumeRequest {
+  /// Whole percentage, 0 to 100. Wider than `u8` so an out-of-range value gets
+  /// the plain-text reason below rather than a generic parse error.
+  volume: Option<i64>,
+  muted: Option<bool>,
+}
+
+impl VolumeRequest {
+  fn validated(&self) -> Result<Option<u8>, HttpResponse> {
+    if self.volume.is_none() && self.muted.is_none() {
+      return Err(HttpResponse::BadRequest().body("supply volume, muted, or both\n"));
+    }
+    match self.volume {
+      None => Ok(None),
+      Some(volume) => u8::try_from(volume)
+        .ok()
+        .filter(|volume| *volume <= notify_types::MAX_VOLUME)
+        .map(Some)
+        .ok_or_else(|| HttpResponse::BadRequest().body("volume must be between 0 and 100\n")),
+    }
+  }
+}
+
+/// Global volume and mute (`POST /sound/volume`), multiplied by each row's own.
+pub async fn set_sound_volume(
+  state: web::Data<ServerState>,
+  request: web::Json<VolumeRequest>,
+) -> HttpResponse {
+  let volume = match request.validated() {
+    Ok(volume) => volume,
+    Err(response) => return response,
+  };
+  let mut current = state
+    .notifications
+    .lock()
+    .unwrap_or_else(|e| e.into_inner());
+  current.volume = volume.unwrap_or(current.volume);
+  current.muted = request.muted.unwrap_or(current.muted);
+  reconcile_audio(&state, &mut current);
+  HttpResponse::Ok().json(sound_state(&current))
+}
+
+#[derive(Serialize)]
+struct RowVolumeResponse {
+  updated: bool,
+}
+
+/// One row's volume and mute (`POST /volume/{id}`). A user action like Focus: it
+/// never changes state, order, or `updated_at`, and a stale ID cannot reach the
+/// session's replacement.
+pub async fn set_row_volume(
+  state: web::Data<ServerState>,
+  id: web::Path<String>,
+  request: web::Json<VolumeRequest>,
+) -> HttpResponse {
+  let volume = match request.validated() {
+    Ok(volume) => volume,
+    Err(response) => return response,
+  };
+  let mut current = state
+    .notifications
+    .lock()
+    .unwrap_or_else(|e| e.into_inner());
+  let row = current.active.iter_mut().find(|n| n.id == *id);
+  let updated = row.is_some();
+  if let Some(notification) = row {
+    notification.volume = volume.unwrap_or(notification.volume);
+    notification.muted = request.muted.unwrap_or(notification.muted);
+    record_user_action(notification, Utc::now());
+    reconcile_audio(&state, &mut current);
+  }
+  HttpResponse::Ok().json(RowVolumeResponse { updated })
 }
 
 #[derive(Serialize)]

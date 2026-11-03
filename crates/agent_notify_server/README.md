@@ -36,7 +36,9 @@ endpoint) is in the workspace [AGENTS.md](../../AGENTS.md#http-api-current-api-v
 | POST | `/dismiss/{id}` | Clear one row. |
 | POST | `/focused/{id}` | Record that the app focused this row's terminal; changes nothing else. |
 | GET | `/notifications` | All rows, newest first. |
-| GET | `/sound` | `{snoozed_until, alerting}`. |
+| GET | `/sound` | `{snoozed_until, alerting, volume, muted}`. |
+| POST | `/sound/volume` | `{volume?, muted?}` (0–100): global volume, multiplied by each row's own. Returns the same as `GET /sound`. |
+| POST | `/volume/{id}` | `{volume?, muted?}` (0–100): this row's volume, kept by its session across updates. Returns `{updated}`; stale IDs return `false`. |
 | POST, GET | `/sound/stop` | Acknowledge every alerting row and cancel any snooze; rows stay. |
 | POST | `/sound/snooze` | `{seconds}` (1–86400): mute until that wall-clock time. |
 | POST | `/sound/resume` | End a snooze early. |
@@ -65,7 +67,7 @@ that started the current task; an alert's optional `turn_started_at` fills it
 only when the service did not see the start and it falls after the previous task ended), `task_finished_at` (`done`/`failed` only),
 `waiting_since` (`input_needed*` only), `dismissed_at` (cleared by the next
 agent update), `last_request_at` (any request touching the row),
-`user_action_at` (Dismiss, Stop sound, or Focus from the app or web), and
+`user_action_at` (Dismiss, Stop sound, volume, or Focus from the app or web), and
 `user_input_at` (a submitted prompt or answered question, from the hooks).
 Moments the service did not see are omitted.
 
@@ -79,7 +81,7 @@ of the endpoints above.
 {
   "notifications": [],
   "audio_notification_id": null,
-  "sound": {"snoozed_until": null, "alerting": false},
+  "sound": {"snoozed_until": null, "alerting": false, "volume": 100, "muted": false},
   "desktop": {"presentation": "tauri", "window_visible": false, "pid": 123, "displayed_ids": []},
   "desktop_connected": true,
   "audio": {

@@ -37,6 +37,8 @@ fn routes(cfg: &mut web::ServiceConfig) {
     .route("/sound", web::get().to(sound))
     .route("/sound/snooze", web::post().to(snooze))
     .route("/sound/resume", web::post().to(resume_sound))
+    .route("/sound/volume", web::post().to(set_sound_volume))
+    .route("/volume/{id}", web::post().to(set_row_volume))
     .configure(stop_handler::routes);
 }
 
@@ -1213,4 +1215,202 @@ async fn a_reported_turn_start_only_fills_an_unknown_start_and_never_reaches_bac
   )
   .await;
   assert_eq!(future.times.task_started_at, None);
+}
+
+// Macros because the test service's request type is not nameable from here.
+macro_rules! post_json {
+  ($app:expr, $uri:expr, $body:expr) => {{
+    let request = test::TestRequest::post()
+      .uri($uri)
+      .insert_header(("Content-Type", "application/json"))
+      .set_payload($body.to_owned())
+      .to_request();
+    test::call_service($app, request).await
+  }};
+}
+
+macro_rules! alert {
+  ($app:expr, $endpoint:expr, $session:expr) => {{
+    let body =
+      serde_json::json!({"title": "t", "message": "m", "session_id": $session}).to_string();
+    let row: Notification = test::read_body_json(post_json!($app, $endpoint, body)).await;
+    row
+  }};
+}
+
+fn drain(commands: &std::sync::mpsc::Receiver<AudioCommand>) -> Vec<AudioCommand> {
+  commands.try_iter().collect()
+}
+
+fn assert_gain(state: &ServerState, expected: f32) {
+  let gain = state.audio.status().gain;
+  assert!((gain - expected).abs() < 0.001, "gain {gain} != {expected}");
+}
+
+#[actix_web::test]
+async fn sound_plays_at_the_product_of_both_volumes_without_restarting_the_loop() {
+  let (state, commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  let row = alert!(&app, "/all_tasks_finished", "a");
+  assert_eq!(drain(&commands).len(), 1);
+  assert_gain(&state, 1.0);
+
+  let sound: SoundState =
+    test::read_body_json(post_json!(&app, "/sound/volume", r#"{"volume":50}"#)).await;
+  assert_eq!((sound.volume, sound.muted), (50, false));
+  assert_gain(&state, 0.5);
+
+  let uri = format!("/volume/{}", row.id);
+  let response: serde_json::Value =
+    test::read_body_json(post_json!(&app, &uri, r#"{"volume":40}"#)).await;
+  assert_eq!(response["updated"], true);
+  assert_gain(&state, 0.2);
+
+  // Global mute silences the running loop; unmuting restores the same product.
+  post_json!(&app, "/sound/volume", r#"{"muted":true}"#);
+  assert_gain(&state, 0.0);
+  post_json!(&app, "/sound/volume", r#"{"muted":false}"#);
+  assert_gain(&state, 0.2);
+  assert!(
+    drain(&commands).is_empty(),
+    "volume changes must not touch the loop"
+  );
+}
+
+#[actix_web::test]
+async fn a_muted_row_falls_through_to_the_next_audible_row_at_its_volume() {
+  let (state, commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  let done = alert!(&app, "/all_tasks_finished", "done");
+  let asking = alert!(&app, "/awaiting_user_input", "asking");
+  drain(&commands);
+  post_json!(&app, &format!("/volume/{}", done.id), r#"{"volume":30}"#);
+  assert_gain(&state, 1.0);
+  assert!(
+    drain(&commands).is_empty(),
+    "another row's volume is unrelated"
+  );
+
+  let uri = format!("/volume/{}", asking.id);
+  post_json!(&app, &uri, r#"{"muted":true}"#);
+  match drain(&commands).as_slice() {
+    [AudioCommand::PlayLoop(spec)] => assert_eq!(spec.name, "done"),
+    other => panic!("unexpected commands: {other:?}"),
+  }
+  assert_gain(&state, 0.3);
+  // Muting changes sound, not status: the row still needs the user.
+  let rows = state.notifications.lock().unwrap().active.clone();
+  assert_eq!(rows[0].state, TaskState::InputNeeded);
+  assert_eq!(rows[0].id, asking.id);
+
+  // Zero counts as muted, and with nothing audible the loop stops.
+  post_json!(&app, &format!("/volume/{}", done.id), r#"{"volume":0}"#);
+  assert!(matches!(
+    drain(&commands).as_slice(),
+    [AudioCommand::StopAll]
+  ));
+  post_json!(&app, &uri, r#"{"muted":false}"#);
+  match drain(&commands).as_slice() {
+    [AudioCommand::PlayLoop(spec)] => assert_eq!(spec.name, "await"),
+    other => panic!("unexpected commands: {other:?}"),
+  }
+  assert_gain(&state, 1.0);
+}
+
+#[actix_web::test]
+async fn row_volume_stays_with_its_session_and_ignores_stale_ids() {
+  let (state, commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  let first = alert!(&app, "/awaiting_user_input", "a");
+  let other = alert!(&app, "/awaiting_user_input", "b");
+  let uri = format!("/volume/{}", first.id);
+  post_json!(&app, &uri, r#"{"volume":25,"muted":true}"#);
+
+  // The replacement keeps the setting, and the other session is untouched.
+  let replacement = alert!(&app, "/all_tasks_finished", "a");
+  assert_ne!(replacement.id, first.id);
+  assert_eq!((replacement.volume, replacement.muted), (25, true));
+  assert_eq!((other.volume, other.muted), (100, false));
+
+  // The old ID cannot reach the replacement.
+  drain(&commands);
+  let response: serde_json::Value =
+    test::read_body_json(post_json!(&app, &uri, r#"{"volume":90,"muted":false}"#)).await;
+  assert_eq!(response["updated"], false);
+  assert!(drain(&commands).is_empty());
+  let rows = state.notifications.lock().unwrap().active.clone();
+  let current = rows.iter().find(|n| n.id == replacement.id).unwrap();
+  assert_eq!((current.volume, current.muted), (25, true));
+
+  // A volume change is a user action, not an agent update, and keeps the order.
+  let before = rows.iter().map(|n| n.id.clone()).collect::<Vec<_>>();
+  let uri = format!("/volume/{}", other.id);
+  post_json!(&app, &uri, r#"{"volume":10}"#);
+  let rows = state.notifications.lock().unwrap().active.clone();
+  assert_eq!(
+    rows.iter().map(|n| n.id.clone()).collect::<Vec<_>>(),
+    before
+  );
+  let changed = rows.iter().find(|n| n.id == other.id).unwrap();
+  assert_eq!(changed.times.updated_at, other.times.updated_at);
+  assert!(changed.times.user_action_at.is_some());
+  assert_eq!(changed.state, TaskState::InputNeeded);
+}
+
+#[actix_web::test]
+async fn unassigned_rows_start_at_full_volume() {
+  let (state, _commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  let body = r#"{"title":"t","message":"m"}"#;
+  let row: Notification = test::read_body_json(post_json!(&app, "/all_tasks_finished", body)).await;
+  post_json!(&app, &format!("/volume/{}", row.id), r#"{"volume":5}"#);
+  let next: Notification =
+    test::read_body_json(post_json!(&app, "/all_tasks_finished", body)).await;
+  assert_eq!(next.volume, 100);
+}
+
+#[actix_web::test]
+async fn invalid_volume_requests_change_nothing() {
+  let (state, commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  let row = alert!(&app, "/all_tasks_finished", "a");
+  drain(&commands);
+  for uri in ["/sound/volume".to_string(), format!("/volume/{}", row.id)] {
+    for body in [
+      r#"{"volume":101}"#,
+      r#"{"volume":-1}"#,
+      r#"{"volume":50.5}"#,
+      r#"{"volume":101,"muted":true}"#,
+      r#"{"gain":1}"#,
+      r#"{}"#,
+    ] {
+      let response = post_json!(&app, &uri, body);
+      assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri} {body}");
+    }
+  }
+  let current = state.notifications.lock().unwrap();
+  assert_eq!((current.volume, current.muted), (100, false));
+  assert_eq!(
+    (current.active[0].volume, current.active[0].muted),
+    (100, false)
+  );
+  drop(current);
+  assert_gain(&state, 1.0);
+  assert!(drain(&commands).is_empty());
+}
+
+#[actix_web::test]
+async fn clearing_everything_keeps_the_global_volume() {
+  let (state, _commands) = state();
+  let app = test::init_service(App::new().app_data(state.clone()).configure(routes)).await;
+  alert!(&app, "/all_tasks_finished", "a");
+  post_json!(&app, "/sound/volume", r#"{"volume":35,"muted":true}"#);
+  let request = test::TestRequest::post().uri("/stop").to_request();
+  assert_eq!(
+    test::call_service(&app, request).await.status(),
+    StatusCode::OK
+  );
+  let current = state.notifications.lock().unwrap();
+  assert!(current.active.is_empty());
+  assert_eq!((current.volume, current.muted), (35, true));
 }

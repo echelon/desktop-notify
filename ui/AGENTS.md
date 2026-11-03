@@ -27,6 +27,11 @@ Use two-space JavaScript indentation and follow the existing CSS style/tokens.
   alerting rows and acknowledges that row alone. Stop sound and Snooze are global
   controls in the bar above the footer; they retain every row. Clear (×) removes
   only its row. Hide and keyboard shortcuts only hide the window.
+- Volume is separate from Stop sound and Snooze: the always-visible bar sets the
+  global volume (`set_sound_volume`), and each row's smaller control sets its own
+  (`set_notification_volume`). Sound is their product. A control shows its own value
+  while held, sending, or settling, then returns to the service's. Clear all
+  (`clear_all_notifications`, `POST /stop`) sits with the global sound buttons.
 - Filter chips (All, Needs you, Asking, Working, Done, with counts) and the sort
   menu (Needs you first, Working first, Last update, First seen, plus a
   newest/oldest toggle) are view-only: never persist them, call the service, or

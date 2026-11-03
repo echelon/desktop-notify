@@ -83,7 +83,7 @@ tray bell. The row's `state` field is its only status.
 | `failed_acknowledged` | no, terminal | Dismiss or Stop sound on `failed` | — |
 
 Sound priority is the newest `input_needed`, then the newest `failed`, then the
-newest `done`. A new agent update to a session replaces its row with a fresh
+newest `done`, skipping rows that are muted or at zero volume. A new agent update to a session replaces its row with a fresh
 ID, whatever the previous state. Candidate future states (not implemented): an
 `ended` state when the agent's PID exits without Stop, and a stale-`working`
 marker.
@@ -104,7 +104,9 @@ A missing configured sound returns 503.
 | `POST /working` | `{session_id, title?, message?, context?, origin?, agent?, only_if_waiting?, tool_use_id?}` | Row becomes `working` and returns `{updated, notification?}`. With `only_if_waiting`, it only resumes an `input_needed*` row waiting on the same `tool_use_id` (or either is unknown), and never creates a row or revives a finished one. Missing title/message keep the row's text. |
 
 These return the row: `{id, session_id?, state, title, message, context?,
-origin?, agent?, times?}`. Limits: title 1–200 characters, message 1–4000,
+origin?, agent?, times?, volume?, muted?}`. `volume` (0–100, omitted at 100) and `muted`
+(omitted when false) are set through `POST /volume/{id}`; named sessions keep them
+across updates, and requests here cannot set them. Limits: title 1–200 characters, message 1–4000,
 `session_id` and `tool_use_id` 1–256 bytes with no control characters. Rows are
 keyed by `session_id`; omitted IDs share one legacy "unassigned" row. Named
 sessions keep `context`, `origin`, and `agent` when an update omits them.
@@ -127,8 +129,8 @@ replacements; the unassigned row starts fresh each time.
 | `task_finished_at` | `done`/`failed` | `None` for every other state |
 | `waiting_since` | Entering `input_needed` (kept if already waiting) | `None` outside `input_needed*` |
 | `dismissed_at` | Dismiss or Stop sound | Any agent update |
-| `last_request_at` | Any request that touched the row: agent reports (including no-op ones), Dismiss, Stop sound (rows it quieted), Focus | Kept until the next one |
-| `user_action_at` | Dismiss, Stop sound (rows it quieted), or Focus from the app or web interface | Kept across agent updates |
+| `last_request_at` | Any request that touched the row: agent reports (including no-op ones), Dismiss, Stop sound (rows it quieted), row volume, Focus | Kept until the next one |
+| `user_action_at` | Dismiss, Stop sound (rows it quieted), row volume, or Focus from the app or web interface | Kept across agent updates |
 | `user_input_at` | Every move to `working`: the hooks send that only for a submitted prompt or an answered question/permission | Kept across agent updates; a finished tool that changed nothing does not set it |
 
 Terminal activity is inferred only from those hook events. The service does not
@@ -144,13 +146,15 @@ for, waiting for, ran for, and finished/failed "N minutes ago".
 | `POST /acknowledge/{id}` | Dismiss: an alerting row moves to its quiet state and stays listed. Returns `{stopped}`; stale or already-quiet IDs return `false`. |
 | `POST /dismiss/{id}` | Clear: remove that row. Returns `{stopped}`; stale IDs are harmless. |
 | `POST /focused/{id}` | Record that the app focused this row's terminal (`user_action_at`). Changes nothing else. Returns `{recorded}`; stale IDs return `false`. |
-| `POST /stop` | Clear every row, cancel any snooze, and stop all audio. Hooks must never call it. |
+| `POST /volume/{id}` | `{volume?, muted?}` (0–100): this row's volume. Changes no state, order, or `updated_at`. Returns `{updated}`; stale IDs return `false`. |
+| `POST /stop` | Clear every row, cancel any snooze, and stop all audio. Hooks must never call it. Global volume is kept. |
 
 **Global sound** (used by the app's sound bar):
 
 | Endpoint | Effect |
 | --- | --- |
-| `GET /sound` | `{snoozed_until, alerting}`; `snoozed_until` is RFC 3339 UTC or null. |
+| `GET /sound` | `{snoozed_until, alerting, volume, muted}`; `snoozed_until` is RFC 3339 UTC or null. |
+| `POST /sound/volume` | `{volume?, muted?}` (0–100): global volume, multiplied by the playing row's own. Applies live without restarting the loop. Returns the same as `GET /sound`. |
 | `POST /sound/stop` (also `GET`) | Stop sound: acknowledge every alerting row and cancel any snooze. Rows stay. |
 | `GET /stop` | Legacy `stop-sound` alias: identical to `GET /sound/stop`; rows and Focus targets stay. |
 | `POST /sound/snooze` | `{seconds}` (1–86400): mute until now + seconds. Replaces an earlier snooze. |
@@ -178,11 +182,11 @@ W = web interface at `GET /`, S = `stop-sound` shell alias in
 | `POST /awaiting_user_input`, `/all_tasks_finished`, `/working` | C, X |
 | `POST /task_failed` | C (StopFailure) |
 | `GET /notifications`, `GET /sound` | A, W (polling) |
-| `POST /acknowledge/{id}`, `/dismiss/{id}`, `/sound/snooze` | A, W (buttons) |
+| `POST /acknowledge/{id}`, `/dismiss/{id}`, `/sound/snooze`, `/sound/volume`, `/volume/{id}` | A, W (buttons, sliders) |
 | `POST /focused/{id}` | A (after the Focus button, best-effort) |
 | `POST /sound/stop` | A, W, S (`curl -fsS -m 1 -X POST http://127.0.0.1:43110/sound/stop`) |
 | `POST /sound/resume` | W |
-| `POST /stop` | W ("Clear all tasks") |
+| `POST /stop` | A ("Clear all"), W ("Clear all tasks") |
 | `GET /stop` | shells still holding the old `stop-sound` alias |
 | `POST /desktop/status` | A (heartbeat) |
 | `GET /` | you, in a browser; the app's **Web API ↗** link opens it |
@@ -196,7 +200,8 @@ Hooks skip or adapt new calls on older services (`codex_hook.compatible`).
   sound, and the live API reference. Never remove it; keep it in sync with the API.
 - **Retained:** `GET /stop` serves shells that still hold the old `stop-sound`
   alias. It uses the same sound-only handler as `POST /sound/stop` and must never
-  clear rows. `POST /stop` is the web interface's "Clear all tasks".
+  clear rows. `POST /stop` is the app's "Clear all" and the web interface's "Clear
+  all tasks".
 - **Removed** (API 4, after confirming no hook, app, alias, or Codex config
   called them): the sound-only `GET /alert_beep|alert_done|alert_await` and
   `GET /loop_beep|loop_done|loop_await` endpoints (the loops cleared every row),
@@ -300,6 +305,13 @@ its task start.
   Done (`done*`/`failed*`), each with a count, and a sort menu: Needs you first
   (default), Working first, Last update, or First seen, with ↓/↑ for newest or
   oldest first within that order. Opens on All every launch.
+- **Volume:** an always-visible mute button and slider above the footer set the
+  volume for all tasks, and each row has a smaller pair for itself. Sound plays at
+  their product and changes live. A row that is muted or at zero is skipped, so the
+  sound falls through to the next audible row; its session keeps the setting until
+  the row is cleared. Global mute silences the running loop, which keeps escalating.
+  Muted alerts still open the window and animate the bell. The web interface has
+  the same controls. Settings survive restarts through the task backup, not reboots.
 - **Row buttons:** **Focus** returns to the agent's terminal and changes nothing
   else (afterwards it only reports the time through `POST /focused/{id}`). **Dismiss** (alerting rows only) acknowledges that row; others keep
   alerting. **×** (Clear) removes the row.
@@ -308,7 +320,8 @@ its task start.
   line showing the exact call each button made.
 - **Self-documenting app:** each tray-app button's tooltip names its REST call,
   and the footer's **Web API ↗** opens the web interface.
-- **Sound bar:** **Stop sound** acknowledges every alerting row. **Snooze 1/5 min**
+- **Sound bar:** **Clear all** removes every row (`POST /stop`). **Stop sound**
+  acknowledges every alerting row. **Snooze 1/5 min**
   mutes all sound until a recorded wall-clock time. The service compares it with
   the clock whenever the app polls, and resumes the loop after it passes. A
   countdown shows while snoozed.
@@ -322,8 +335,8 @@ its task start.
   left and right, and ripples sound waves while any row is alerting, unless
   snoozed or offline. The app reconnects after service restarts and keeps its
   last snapshot while offline.
-- **Task backup:** the service writes rows, the snooze deadline, and waiting
-  tools as TOML to `/tmp/desktop-notify/state-<port>.toml` (directory 0700,
+- **Task backup:** the service writes rows, the snooze deadline, global volume, and
+  waiting tools as TOML to `/tmp/desktop-notify/state-<port>.toml` (directory 0700,
   file 0600, atomic rename) every 5 minutes when changed and on SIGTERM/SIGINT,
   waiting at most 1 s at shutdown. On start it restores that file once, revalidating
   every row, then resumes sound for alerting rows. Missing, corrupt, other-format,

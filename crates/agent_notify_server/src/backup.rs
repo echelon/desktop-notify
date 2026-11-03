@@ -39,11 +39,20 @@ pub struct Backup {
   saved_at: DateTime<Utc>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   snoozed_until: Option<DateTime<Utc>>,
+  /// Global volume; backups from before volume controls read as full volume.
+  #[serde(default = "full_volume")]
+  volume: u8,
+  #[serde(default)]
+  muted: bool,
   /// Session ID → the tool call its `input_needed` row waits on.
   #[serde(default)]
   waiting_tools: HashMap<String, String>,
   #[serde(default)]
   notifications: Vec<Notification>,
+}
+
+fn full_volume() -> u8 {
+  notify_types::MAX_VOLUME
 }
 
 impl Backup {
@@ -53,6 +62,8 @@ impl Backup {
       format: FORMAT,
       saved_at: Utc::now(),
       snoozed_until: state.snoozed_until,
+      volume: state.volume,
+      muted: state.muted,
       waiting_tools: state.waiting_tools.clone(),
       notifications: state.active.clone(),
     }
@@ -75,6 +86,8 @@ impl Backup {
       })
       .collect();
     state.snoozed_until = self.snoozed_until;
+    state.volume = self.volume.min(notify_types::MAX_VOLUME);
+    state.muted = self.muted;
     state.active = rows;
   }
 
@@ -82,6 +95,8 @@ impl Backup {
   fn same_content(&self, other: &Self) -> bool {
     self.notifications == other.notifications
       && self.snoozed_until == other.snoozed_until
+      && self.volume == other.volume
+      && self.muted == other.muted
       && self.waiting_tools == other.waiting_tools
   }
 }
@@ -97,6 +112,7 @@ fn valid_row(row: &Notification) -> bool {
     && row.session_id.as_deref().is_none_or(valid_id)
     && text(&row.title, 200)
     && text(&row.message, 4000)
+    && row.volume <= notify_types::MAX_VOLUME
     && row.context.validate().is_ok()
     && row
       .origin
@@ -213,6 +229,10 @@ mod tests {
     ];
     state.snoozed_until = Some(Utc::now());
     state.waiting_tools.insert("one".into(), "tool-1".into());
+    state.volume = 35;
+    state.muted = true;
+    state.active[0].volume = 60;
+    state.active[1].muted = true;
     write(&path, &Backup::of(&state)).unwrap();
     assert_eq!(
       fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
@@ -227,6 +247,7 @@ mod tests {
     assert_eq!(restored.active, state.active);
     assert_eq!(restored.snoozed_until, state.snoozed_until);
     assert_eq!(restored.waiting_tools, state.waiting_tools);
+    assert_eq!((restored.volume, restored.muted), (35, true));
     // Overwriting replaces the previous backup.
     state.active.truncate(1);
     write(&path, &Backup::of(&state)).unwrap();
@@ -266,10 +287,14 @@ mod tests {
     bad_id.id = "not-hex".into();
     let mut blank = row('d', "four", TaskState::Done);
     blank.title.clear();
+    let mut too_loud = row('e', "five", TaskState::Done);
+    too_loud.volume = 101;
     let backup = Backup {
       format: FORMAT,
       saved_at: Utc::now(),
       snoozed_until: None,
+      volume: 200,
+      muted: false,
       waiting_tools: HashMap::from([
         ("one".into(), "tool".into()),
         ("gone".into(), "tool".into()),
@@ -279,12 +304,14 @@ mod tests {
         row('b', "one", TaskState::Done),
         bad_id,
         blank,
+        too_loud,
       ],
     };
     let mut state = NotificationState::default();
     backup.restore_into(&mut state);
     assert_eq!(state.active.len(), 1);
     assert_eq!(state.active[0].id, "a".repeat(32));
+    assert_eq!(state.volume, notify_types::MAX_VOLUME);
     assert_eq!(state.waiting_tools.len(), 1);
     assert!(state.waiting_tools.contains_key("one"));
   }
